@@ -1,0 +1,230 @@
+Arduino 测试流程清单
+===================
+
+本文档用于指导 Arduino UNO 板子和小车底盘到货后的测试流程。
+
+
+阶段 1：板子与 IDE 检查
+----------------------
+
+1. 上传 Blink 测试程序
+
+程序位置：
+  tests/test_00_blink/test_00_blink.ino
+
+预期结果：
+  Arduino UNO 板载 LED 闪烁。
+
+如果失败，检查：
+  - USB 线是否是数据线
+  - Arduino IDE 是否选择 Arduino UNO
+  - COM 口是否正确
+  - 驱动是否安装成功
+  - 是否有其他程序占用了串口
+
+
+阶段 2：串口输出检查
+--------------------
+
+2. 上传 Serial Print 测试程序
+
+程序位置：
+  tests/test_01_serial_print/test_01_serial_print.ino
+
+串口监视器设置：
+  波特率：9600
+
+预期结果：
+  串口监视器每秒打印：
+    loop running...
+
+
+阶段 3：简单串口指令检查
+------------------------
+
+3. 上传 Serial Command 测试程序
+
+程序位置：
+  tests/test_02_serial_command/test_02_serial_command.ino
+
+输入：
+  f
+  b
+  l
+  r
+  s
+
+预期结果：
+  f -> Forward
+  b -> Backward
+  l -> Turn left
+  r -> Turn right
+  s -> Stop
+
+目的：
+  确认 Arduino 能接收并解析简单串口字符指令。
+
+
+阶段 4：TARGET 数据解析检查
+---------------------------
+
+4. 上传 TARGET Parser Debug 测试程序
+
+程序位置：
+  tests/test_03_target_parser_debug/test_03_target_parser_debug.ino
+
+串口监视器设置：
+  波特率：9600
+  行结束符：Newline
+
+输入示例：
+
+  TARGET,1,0.00,0.05,0.90
+  TARGET,1,-0.40,0.10,0.90
+  TARGET,1,0.40,0.10,0.90
+  TARGET,0,0.00,0.00,0.00
+  TARGET,1,0.10,0.10,0.20
+  TARGET,1,0.00,0.40,0.90
+
+预期检查：
+
+  visible = 0：
+    Arduino 应输出停止指令。
+
+  quality 较低：
+    Arduino 应输出停止指令。
+
+  x < 0：
+    Arduino 应产生一个方向修正量。
+
+  x > 0：
+    Arduino 应产生相反方向的修正量。
+
+  size 较大：
+    Arduino 应减速或停止。
+
+  size 较小：
+    Arduino 应输出较大的前进速度。
+
+
+阶段 5：OpenBot 到 Arduino 通信检查
+----------------------------------
+
+5. 连接 OpenBot 输出到 Arduino。
+
+期望消息格式：
+
+  TARGET,visible,x,size,quality
+
+检查内容：
+  - OpenBot 和 Arduino 的波特率是否一致
+  - 每条消息后面是否有换行符
+  - Arduino 是否能接收到完整消息
+  - Arduino 是否能打印 visible、x、size、quality
+  - 是否出现乱码或消息截断
+
+
+阶段 6：电机驱动检查
+--------------------
+
+6. 上传 Motor Driver 测试程序
+
+程序位置：
+  tests/test_04_motor_driver_test/test_04_motor_driver_test.ino
+
+测试前准备：
+  1. 确认电机驱动板接线。
+  2. 根据实际接线修改代码中的电机引脚。
+  3. 将小车轮子架空。
+  4. 使用低速测试。
+  5. 将电机测试使能标志设置为 1。
+
+测试指令：
+  lf -> 左电机正转
+  lb -> 左电机反转
+  rf -> 右电机正转
+  rb -> 右电机反转
+  ff -> 双电机前进
+  ss -> 停止
+
+预期结果：
+  - 左电机可以正转和反转。
+  - 右电机可以正转和反转。
+  - 停止指令有效。
+  - 记录真实电机方向。
+
+
+阶段 7：距离传感器检查
+----------------------
+
+7. 上传 Distance Sensor 测试程序
+
+程序位置：
+  tests/test_05_distance_sensor_test/test_05_distance_sensor_test.ino
+
+预期结果：
+  串口监视器打印前方距离值。
+
+检查内容：
+  - 障碍物距离变化时，读数是否变化。
+  - 无效读数是否返回 -1。
+  - 单位是否为 cm。
+
+
+阶段 8：主控程序检查
+--------------------
+
+8. 上传主控程序
+
+程序位置：
+  target_follow_controller/target_follow_controller.ino
+
+第一次测试时保持：
+
+  MOTOR_ENABLED = 0
+  SENSOR_ENABLED = 0
+  DEBUG_PRINT = 1
+
+检查内容：
+  - TARGET 数据能否被正确解析。
+  - 左右轮速度指令是否被正确打印。
+  - 目标超时是否触发停止。
+  - 目标丢失是否触发停止。
+  - quality 太低是否触发停止。
+  - size 过大是否触发减速或停止。
+
+
+阶段 9：启用电机输出测试
+------------------------
+
+9. 启用电机输出。
+
+只有在确认接线无误后，才能设置：
+
+  MOTOR_ENABLED = 1
+
+测试时必须让小车轮子架空。
+
+检查内容：
+  - 左电机方向是否正确。
+  - 右电机方向是否正确。
+  - 停止指令是否有效。
+  - 如果转向方向相反，修改 TURN_SIGN。
+
+
+阶段 10：低速落地测试
+---------------------
+
+10. 低速落地测试。
+
+落地测试前建议降低速度参数：
+
+  MIN_SPEED = 40
+  MAX_SPEED = 100
+
+检查内容：
+  - 目标丢失后是否停车。
+  - quality 过低时是否停车。
+  - 目标在左/右侧时，转向是否正确。
+  - 目标过近时是否停车。
+  - 是否存在失控冲出的问题。
