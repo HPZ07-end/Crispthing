@@ -1,6 +1,33 @@
 参数调试记录
 ============
 
+履带底盘调参说明
+----------------
+
+由于本项目采用左右履带差速底盘，履带与地面的接触面积更大，转向阻力通常高于普通轮式底盘。
+
+因此实车调参时需要重点关注：
+
+MIN_SPEED:
+  履带底盘低速时可能更容易卡住。
+  如果低速指令下履带不动，可以适当增大 MIN_SPEED。
+
+MAX_SPEED:
+  第一版落地测试应设置较低，避免履带启动过猛。
+
+K_TURN:
+  履带转向阻力较大，但转向时也可能出现打滑。
+  第一版建议先使用较小转向增益，再逐步增大。
+
+TURN_SIGN:
+  如果目标在右侧，但小车向左修正，则修改 TURN_SIGN。
+
+LEFT_TRACK_DIR:
+  如果左履带前进指令下实际后退，则改为 -1。
+
+RIGHT_TRACK_DIR:
+  如果右履带前进指令下实际后退，则改为 -1。
+
 1. 文档作用
 -----------
 
@@ -14,9 +41,14 @@ SIZE_NEAR
 MIN_SPEED
 MAX_SPEED
 K_TURN
-SAFE_DISTANCE_CM
-TARGET_TIMEOUT_MS
 TURN_SIGN
+TARGET_TIMEOUT_MS
+ULTRA_FRONT_SAFE_CM
+ULTRA_SIDE_SAFE_CM
+ULTRA_REAR_SAFE_CM
+TOF_TOO_CLOSE_CM
+TOF_FAR_CM
+TARGET_CENTER_X_THRESHOLD
 
 
 2. 当前默认参数
@@ -40,14 +72,29 @@ MAX_SPEED:
 K_TURN:
   90.0
 
-SAFE_DISTANCE_CM:
-  50.0
+TURN_SIGN:
+  1
 
 TARGET_TIMEOUT_MS:
   500
 
-TURN_SIGN:
-  1
+ULTRA_FRONT_SAFE_CM:
+  45.0
+
+ULTRA_SIDE_SAFE_CM:
+  35.0
+
+ULTRA_REAR_SAFE_CM:
+  35.0
+
+TOF_TOO_CLOSE_CM:
+  80.0
+
+TOF_FAR_CM:
+  180.0
+
+TARGET_CENTER_X_THRESHOLD:
+  0.25
 
 
 3. 参数含义
@@ -90,25 +137,66 @@ K_TURN:
   值越大，小车转向越敏感。
   值越小，小车转向越平缓。
 
-SAFE_DISTANCE_CM:
-  前方安全距离。
-
-  当前主要用于距离传感器安全保护。
-  当前方距离小于该值时，小车停止。
-
-TARGET_TIMEOUT_MS:
-  目标数据超时时间。
-
-  如果 Arduino 在该时间内没有收到新的 TARGET 数据，小车停止。
-
 TURN_SIGN:
   转向方向修正参数。
 
   如果实际测试中发现小车转向方向相反，
   可以将 TURN_SIGN 从 1 改为 -1。
 
+TARGET_TIMEOUT_MS:
+  目标数据超时时间。
 
-4. 调参记录格式
+  如果 Arduino 在该时间内没有收到新的 TARGET 数据，小车停止。
+
+ULTRA_FRONT_SAFE_CM:
+  前方 JSN-SR04 安全距离。
+  前方距离小于该值时，小车停车。
+
+ULTRA_SIDE_SAFE_CM:
+  左右侧 JSN-SR04 安全距离。
+  侧方距离小于该值时，限制对应方向转向。
+
+ULTRA_REAR_SAFE_CM:
+  后方 JSN-SR04 安全距离。
+  后方距离小于该值时，禁止倒车。
+
+TOF_TOO_CLOSE_CM:
+  ToF 前向距离过近阈值。
+  ToF 距离小于该值时，小车停车或减速。
+
+TOF_FAR_CM:
+  ToF 前向较远阈值。
+  当目标接近画面中心且 ToF 距离大于该值时，可以使用较高前进速度。
+
+TARGET_CENTER_X_THRESHOLD:
+  判断目标是否接近画面中心。
+  只有 abs(x) 小于该值时，ToF 更适合作为前向距离参考。
+
+
+4. 急停相关说明
+---------------
+
+急停按钮不是调参项，而是安全输入。
+
+当前默认急停引脚：
+
+EMERGENCY_STOP_PIN:
+  D13
+
+接线逻辑：
+
+按钮未按下：
+  HIGH
+
+按钮按下：
+  LOW
+
+急停触发后：
+  小车立即停车。
+  自动跟随、手动控制和绕障均不再执行。
+
+
+5. 调参记录格式
 ---------------
 
 每次调参建议按下面格式记录：
@@ -123,7 +211,7 @@ TURN_SIGN:
 备注：
 
 
-5. 示例记录
+6. 示例记录
 -----------
 
 日期：

@@ -1,56 +1,45 @@
-# Arduino Target Follow Protocol
+# Arduino 五模块精简版
 
-## 通信协议
+主程序仅拆成用户指定的五个功能模块，另保留一个入口文件：
 
-OpenBot sends target data to Arduino through serial.
+```text
+target_follow_controller/
+├── target_follow_controller.ino   # setup / loop，总调度
+├── config.h                       # 开关、引脚、参数、公共数据类型
+├── remote_control.ino             # 遥控与串口接收
+├── obstacle_avoidance.ino         # 超声波、ToF、避障判断
+├── auto_follow.ino                # TARGET 解析与自主跟随算法
+└── safety_redundancy.ino          # 急停、超时、优先级、最终电机输出
+```
 
-Format:
+## 当前串口输入
+
+自动跟随：
+
+```text
 TARGET,visible,x,size,quality
+```
 
-Example:
-TARGET,1,-0.25,0.12,0.85
+遥控模式（串口监视器选择 Newline）：
 
-Fields:
-visible:
-  1 = target visible
-  0 = target lost
+```text
+f  前进
+b  后退
+l  左转
+r  右转
+s  停止
+a  返回自动跟随模式
+```
 
-x:
-  normalized horizontal offset
-  range: -1.0 to 1.0
-  x < 0 means target is on the left
-  x > 0 means target is on the right
+## 首次验证
 
-size:
-  target size ratio, used for rough distance estimation
+`config.h` 中保持：
 
-quality:
-  detection quality, range 0.0 to 1.
+```cpp
+#define MOTOR_ENABLED 0
+#define SENSOR_ENABLED 0
+#define TOF_ENABLED 0
+#define DEBUG_PRINT 1
+```
 
-## Arduino Code for Crispthing
-
-本目录存放自主跟随小车 Arduino UNO 侧代码。
-
-Arduino 侧主要负责：
-
-1. 接收 OpenBot 输出的目标状态数据；
-2. 解析 `TARGET,visible,x,size,quality`；
-3. 根据目标位置、目标大小和识别质量计算左右轮速度；
-4. 预留距离传感器安全停车逻辑；
-5. 后续根据电机驱动板接线控制底盘运动。
-
-
-
-### Directory Structure
-
-\```text
-arduino/
-├── tests/
-│   ├── test_00_blink/
-│   ├── test_01_serial_print/
-│   ├── test_02_serial_command/
-│   ├── test_03_target_parser_debug/
-│   ├── test_04_motor_driver_test/
-│   └── test_05_distance_sensor_test/
-├── target_follow_controller/
-└── docs/
+先验证编译、串口解析和左右履带指令打印，再逐步启用传感器与电机。

@@ -18,6 +18,10 @@
 
   Note:
     This program only prints actions. It does not control motors.
+
+  电脑能不能向 Arduino 发送字符
+  Arduino 能不能读取字符
+  Arduino 能不能根据字符做判断
 */
 
 void setup() {

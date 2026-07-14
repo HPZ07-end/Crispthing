@@ -1,10 +1,5 @@
 // 测试电机驱动板和左右电机
 /*
-  test_04_motor_driver_test.ino
-
-  Purpose:
-    Test motor driver and left/right motors separately.
-
   Important:
     1. Put the robot on a stand.
     2. Keep wheels off the ground.
@@ -19,12 +14,18 @@
     ff -> both motors forward
     ss -> stop
 
-  Before real test:
-    1. Modify motor pins according to seller wiring diagram.
-    2. Set MOTOR_TEST_ENABLED to 1.
+  单独测试左电机正反转
+  单独测试右电机正反转
+  测试两个电机一起前进
+  测试停止
+  测试急停按钮
+
+  // 测试电机驱动板和左右履带
+  // 第一次测试时必须让履带离地，不能落地测试
 */
 
-#define MOTOR_TEST_ENABLED 0 //状态0时只会打印，不会驱动电机
+#define MOTOR_TEST_ENABLED 0
+#define EMERGENCY_STOP_ENABLED 1
 
 // Placeholder pins. Modify after receiving the robot.
 const int LEFT_PWM  = 5;
@@ -35,8 +36,16 @@ const int RIGHT_PWM = 6;
 const int RIGHT_IN1 = 9;
 const int RIGHT_IN2 = 10;
 
-const int TEST_SPEED = 100;
-const unsigned long TEST_DURATION_MS = 1000;
+#define LEFT_TRACK_DIR 1
+#define RIGHT_TRACK_DIR 1
+
+// INPUT_PULLUP:
+// not pressed = HIGH
+// pressed     = LOW
+const int EMERGENCY_STOP_PIN = 13;
+
+const int TEST_SPEED = 80;
+const unsigned long TEST_DURATION_MS = 600;
 
 char serialBuffer[20];
 int serialIndex = 0;
@@ -56,12 +65,23 @@ void setup() {
   stopAllMotors();
 #endif
 
+#if EMERGENCY_STOP_ENABLED
+  pinMode(EMERGENCY_STOP_PIN, INPUT_PULLUP);
+#endif
+
   Serial.println("Motor driver test ready.");
   Serial.println("Commands: lf, lb, rf, rb, ff, ss");
   Serial.println("Motor output is disabled by default.");
 }
 
 void loop() {
+  if (isEmergencyStopActive()) {
+    Serial.println("Emergency stop active. Motors stopped.");
+    stopAllMotors();
+    delay(200);
+    return;
+  }
+
   readSerialLines();
 }
 
@@ -87,26 +107,32 @@ void readSerialLines() {
 }
 
 void handleCommand(const char* cmd) {
+  if (isEmergencyStopActive()) {
+    stopAllMotors();
+    Serial.println("Emergency stop active. Command ignored.");
+    return;
+  }
+
   if (strcmp(cmd, "lf") == 0) {
-    Serial.println("Left motor forward.");
-    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, TEST_SPEED);
+    Serial.println("Left track forward.");
+    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, TEST_SPEED * LEFT_TRACK_DIR);
     delayAndStop();
   } else if (strcmp(cmd, "lb") == 0) {
-    Serial.println("Left motor backward.");
-    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, -TEST_SPEED);
+    Serial.println("Left trackmotor backward.");
+    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, -TEST_SPEED * LEFT_TRACK_DIR);
     delayAndStop();
   } else if (strcmp(cmd, "rf") == 0) {
-    Serial.println("Right motor forward.");
-    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, TEST_SPEED);
+    Serial.println("Right track forward.");
+    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, TEST_SPEED * LEFT_TRACK_DIR);
     delayAndStop();
   } else if (strcmp(cmd, "rb") == 0) {
-    Serial.println("Right motor backward.");
-    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, -TEST_SPEED);
+    Serial.println("Right track backward.");
+    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, -TEST_SPEED * LEFT_TRACK_DIR);
     delayAndStop();
   } else if (strcmp(cmd, "ff") == 0) {
-    Serial.println("Both motors forward.");
-    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, TEST_SPEED);
-    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, TEST_SPEED);
+    Serial.println("Both tracks forward.");
+    setMotor(LEFT_PWM, LEFT_IN1, LEFT_IN2, TEST_SPEED * LEFT_TRACK_DIR);
+    setMotor(RIGHT_PWM, RIGHT_IN1, RIGHT_IN2, TEST_SPEED * LEFT_TRACK_DIR);
     delayAndStop();
   } else if (strcmp(cmd, "ss") == 0) {
     Serial.println("Stop all motors.");
@@ -118,23 +144,41 @@ void handleCommand(const char* cmd) {
 }
 
 void delayAndStop() {
-  delay(TEST_DURATION_MS);
+  unsigned long startTime = millis();
+
+  while (millis() - startTime < TEST_DURATION_MS) {
+    if (isEmergencyStopActive()) {
+      Serial.println("Emergency stop during motor test.");
+      stopAllMotors();
+      return;
+    }
+    delay(10);
+  }
+
   stopAllMotors();
+}
+
+bool isEmergencyStopActive() {
+#if EMERGENCY_STOP_ENABLED
+  return digitalRead(EMERGENCY_STOP_PIN) == LOW;
+#else
+  return false;
+#endif
 }
 
 void setMotor(int pwmPin, int in1Pin, int in2Pin, int speed) {
 #if MOTOR_TEST_ENABLED
   speed = constrain(speed, -255, 255);
 
-  if (speed > 0) {
+  if (speed > 0) { // 正转
     digitalWrite(in1Pin, HIGH);
     digitalWrite(in2Pin, LOW);
     analogWrite(pwmPin, speed);
-  } else if (speed < 0) {
+  } else if (speed < 0) { // 反转
     digitalWrite(in1Pin, LOW);
     digitalWrite(in2Pin, HIGH);
     analogWrite(pwmPin, -speed);
-  } else {
+  } else { // 停止
     digitalWrite(in1Pin, LOW);
     digitalWrite(in2Pin, LOW);
     analogWrite(pwmPin, 0);
