@@ -3,7 +3,7 @@
 namespace {
 bool isEmergencyStopActive() {
 #if EMERGENCY_STOP_ENABLED
-  return digitalRead(EMERGENCY_STOP_PIN) == LOW;
+  return digitalRead(EMERGENCY_STOP_PIN) == HIGH;
 #else
   return false;
 #endif
@@ -74,6 +74,9 @@ void setupSafetyRedundancy() {
   pinMode(RIGHT_PWM, OUTPUT);
   pinMode(RIGHT_IN1, OUTPUT);
   pinMode(RIGHT_IN2, OUTPUT);
+
+  // 上电后第一时间关闭全部电机输出。
+  setMotorSpeed(0, 0);
 #endif
 }
 
@@ -135,19 +138,35 @@ MotionCommand chooseSafeCommand(unsigned long now) {
 }
 
 void applySafeMotionCommand(const MotionCommand& cmd) {
-  // 二次限幅，防止任何上层模块给出越界 PWM。
-  const int safeLeft = constrain(cmd.leftSpeed, -MAX_SPEED, MAX_SPEED);
-  const int safeRight = constrain(cmd.rightSpeed, -MAX_SPEED, MAX_SPEED);
+  const int safeLeft =
+      constrain(cmd.leftSpeed, -MAX_SPEED, MAX_SPEED);
+
+  const int safeRight =
+      constrain(cmd.rightSpeed, -MAX_SPEED, MAX_SPEED);
 
 #if DEBUG_PRINT
-  Serial.print("State=");
-  printRobotState(currentState);
-  Serial.print(", reason=");
-  Serial.print(cmd.reason);
-  Serial.print(", L=");
-  Serial.print(safeLeft);
-  Serial.print(", R=");
-  Serial.println(safeRight);
+  // 只在状态或速度变化时打印，避免串口输出阻塞控制循环。
+  static int lastPrintedLeft = 32767;
+  static int lastPrintedRight = 32767;
+  static int lastPrintedState = -1;
+
+  if (safeLeft != lastPrintedLeft ||
+      safeRight != lastPrintedRight ||
+      (int)currentState != lastPrintedState) {
+
+    Serial.print(F("State="));
+    printRobotState(currentState);
+    Serial.print(F(", reason="));
+    Serial.print(cmd.reason);
+    Serial.print(F(", L="));
+    Serial.print(safeLeft);
+    Serial.print(F(", R="));
+    Serial.println(safeRight);
+
+    lastPrintedLeft = safeLeft;
+    lastPrintedRight = safeRight;
+    lastPrintedState = (int)currentState;
+  }
 #endif
 
   setMotorSpeed(safeLeft, safeRight);

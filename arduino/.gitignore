@@ -1,12 +1,36 @@
-# Arduino build artifacts
+# Arduino build output
 build/
-*.hex
 *.elf
+*.hex
 *.eep
 *.bin
+*.map
 
-# Editor / OS
+# Arduino IDE / editor
+.arduinoIDE/
 .vscode/
 .idea/
+*.code-workspace
+
+# OS files
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Temporary and backup files
+*.tmp
+*.temp
+*.bak
+*.old
+*~
+*.log
+
+# Local test archives and large media
+*.7z
+*.rar
+*.flv
+
+# Do not submit duplicate experimental versions
+*_old.ino
+*_backup.ino
+*_test.ino
