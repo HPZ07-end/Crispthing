@@ -7,7 +7,7 @@ TargetData latestTarget = {
   0,        // sequence
   false,    // valid
   0.0f,     // xError
-  -1.0f,    // distanceCm
+  -1.0f,    // relativeDistance
   0.0f,     // similarity
   0         // receivedAt
 };
@@ -16,7 +16,15 @@ RobotState currentState = STATE_IDLE;
 
 bool hasReceivedTarget = false;
 bool manualModeActive = true;
+
+// 手机发送 STOP 后保持停车
+bool commandStopActive = false;
+
+// 手机发送 ESTOP 后保持软件急停
+bool softwareEmergencyActive = false;
+
 RemoteAction remoteAction = REMOTE_STOP;
+
 int remoteSpeed = 70;
 unsigned long lastRemoteCommandTime = 0;
 

@@ -72,7 +72,7 @@ void setRemoteAction(RemoteAction action) {
 
 // ============================================================
 // 电脑串口遥控
-// f：前进
+// u：前进
 // b：后退
 // l：左转
 // r：右转
@@ -92,7 +92,7 @@ void handleRemoteCharacter(char command) {
     return;
   }
 
-  if (command == 'f') {
+  if (command == 'u') {
     setRemoteAction(REMOTE_FORWARD);
 
   } else if (command == 'b') {
@@ -128,7 +128,146 @@ void handleRemoteCharacter(char command) {
 #endif
 }
 
+// ============================================================
+// 解析手机控制指令
+//
+// CMD,序号,STOP
+// CMD,序号,MANUAL
+// CMD,序号,AUTO
+// CMD,序号,ESTOP
+// ============================================================
+bool handleCommandMessage(char* line) {
+  char* token = strtok(line, ",");
+
+  // 第一个字段必须是 CMD
+  if (token == NULL ||
+      strcmp(token, "CMD") != 0) {
+    return false;
+  }
+
+  // 读取序号
+  token = strtok(NULL, ",");
+
+  if (token == NULL) {
+    return false;
+  }
+
+  char* endPointer = NULL;
+
+  const unsigned long sequence =
+      strtoul(token, &endPointer, 10);
+
+  // 序号必须完全由数字组成
+  if (token[0] == '\0' ||
+      endPointer == NULL ||
+      *endPointer != '\0') {
+    return false;
+  }
+
+  // 读取动作
+  token = strtok(NULL, ",");
+
+  if (token == NULL) {
+    return false;
+  }
+
+  char* action = token;
+
+  // 不允许出现多余字段
+  if (strtok(NULL, ",") != NULL) {
+    return false;
+  }
+
+  // ----------------------------------------------------------
+  // STOP：停车锁定，但不改变当前手动/自动模式
+  // ----------------------------------------------------------
+  if (strcmp(action, "STOP") == 0) {
+    commandStopActive = true;
+    remoteAction = REMOTE_STOP;
+    stopCar();  // 立即把左右电机输出清零
+    requireRemoteNeutralRearm();
+  }
+
+  // ----------------------------------------------------------
+  // MANUAL：进入手动模式
+  //
+  // MANUAL 同时作为软件 ESTOP 的安全解除动作。
+  // 解除后仍要求手柄方向键先回到中位。
+  // ----------------------------------------------------------
+  else if (strcmp(action, "MANUAL") == 0) {
+    softwareEmergencyActive = false;
+    commandStopActive = false;
+
+    manualModeActive = true;
+    remoteAction = REMOTE_STOP;
+
+    requireRemoteNeutralRearm();
+  }
+
+  // ----------------------------------------------------------
+  // AUTO：进入自动模式
+  //
+  // 软件 ESTOP 锁定期间不允许直接进入 AUTO；
+  // 必须先发送 MANUAL 完成安全解除。
+  // ----------------------------------------------------------
+  else if (strcmp(action, "AUTO") == 0) {
+    if (softwareEmergencyActive) {
+      Serial.println(
+          F("CMD AUTO rejected: ESTOP latched; send MANUAL first"));
+
+      return true;
+    }
+
+    commandStopActive = false;
+
+    manualModeActive = false;
+    remoteAction = REMOTE_STOP;
+
+    // 进入自动模式后必须等待一条新的 TARGET，
+    // 防止直接使用切换模式前的旧目标数据。
+    hasReceivedTarget = false;
+
+    requireRemoteNeutralRearm();
+  }
+
+  // ----------------------------------------------------------
+  // ESTOP：软件急停锁定
+  // ----------------------------------------------------------
+  else if (strcmp(action, "ESTOP") == 0) {
+    softwareEmergencyActive = true;
+    commandStopActive = true;
+
+    remoteAction = REMOTE_STOP;
+
+    stopCar();  // 立即停车
+
+    requireRemoteNeutralRearm();
+  }
+
+  else {
+    return false;
+  }
+
+#if DEBUG_PRINT
+  Serial.print(F("CMD: seq="));
+  Serial.print(sequence);
+
+  Serial.print(F(", action="));
+  Serial.println(action);
+#endif
+
+  return true;
+}
+
 void handleSerialLine(char* line) {
+  // 手机端模式和安全控制指令
+  if (startsWith(line, "CMD,")) {
+    if (!handleCommandMessage(line)) {
+      Serial.println(F("Invalid CMD message."));
+    }
+
+    return;
+  }
   // OpenBot 自主跟随数据
   if (startsWith(line, "TARGET,")) {
     TargetData target;

@@ -95,7 +95,23 @@ MotionCommand chooseSafeCommand(unsigned long now) {
     return makeStopCommand("emergency stop");
   }
 
-  // 优先级 2：遥控模式，但遥控命令也有看门狗超时。
+    // 优先级 2：手机端软件急停锁定
+  if (softwareEmergencyActive) {
+    currentState = STATE_EMERGENCY;
+
+    return makeStopCommand(
+        "software emergency stop");
+  }
+
+  // 优先级 3：手机端普通停车锁定
+  if (commandStopActive) {
+    currentState = STATE_IDLE;
+
+    return makeStopCommand(
+        "command stop");
+  }
+
+  // 遥控模式，但遥控命令也有看门狗超时。
   if (manualModeActive) {
     if (isRemoteCommandTimedOut(now)) {
       currentState = STATE_IDLE;

@@ -5,179 +5,261 @@ namespace {
 // 根据目标水平偏差计算转向速度
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
-  return (int)(K_TURN * xError * TURN_SIGN);
+
+  return (int)(
+      K_TURN
+      * xError
+      * TURN_SIGN);
 }
 
-// 根据目标距离计算前进速度
-int computeForwardSpeedByDistance(float distanceCm) {
-  // 距离无效
-  if (distanceCm <= 0.0f) {
+
+// 根据相对距离比例计算前进速度
+int computeForwardSpeedByRelativeDistance(
+    float relativeDistance) {
+
+  // -1 或其他非正数都视为无效
+  if (relativeDistance <= 0.0f) {
     return 0;
   }
 
-  // 已经达到跟随停止距离
-  if (distanceCm <= FOLLOW_STOP_DISTANCE_CM) {
+  // 已经到达注册距离附近，停止继续向前
+  if (relativeDistance <=
+      FOLLOW_STOP_RELATIVE_DISTANCE) {
     return 0;
   }
 
-  // 目标较远，使用最大速度
-  if (distanceCm >= FOLLOW_FULL_SPEED_DISTANCE_CM) {
+  // 目标明显较远，使用最大速度
+  if (relativeDistance >=
+      FOLLOW_FULL_SPEED_RELATIVE_DISTANCE) {
     return MAX_SPEED;
   }
 
-  // 在停止距离和全速距离之间线性调速
+  /*
+   * 在停止阈值与全速阈值之间线性调速：
+   *
+   * relativeDistance 越大
+   * → 目标越远
+   * → 前进速度越高
+   */
   const float ratio =
-      (distanceCm - FOLLOW_STOP_DISTANCE_CM) /
-      (FOLLOW_FULL_SPEED_DISTANCE_CM - FOLLOW_STOP_DISTANCE_CM);
+      (relativeDistance
+       - FOLLOW_STOP_RELATIVE_DISTANCE)
+      /
+      (FOLLOW_FULL_SPEED_RELATIVE_DISTANCE
+       - FOLLOW_STOP_RELATIVE_DISTANCE);
 
   const int speed =
-      MIN_SPEED + (int)(ratio * (MAX_SPEED - MIN_SPEED));
+      MIN_SPEED
+      + (int)(
+          ratio
+          * (MAX_SPEED - MIN_SPEED));
 
-  return constrain(speed, MIN_SPEED, MAX_SPEED);
+  return constrain(
+      speed,
+      MIN_SPEED,
+      MAX_SPEED);
 }
 
 }  // namespace
+
 
 void setupAutoFollow() {
   // 当前自主跟随模块不需要额外硬件初始化
 }
 
-// 解析新协议：
-// TARGET,序号,目标有效,x偏差,距离,相似度
-bool parseTargetMessage(char* line, TargetData& target) {
+
+// 解析协议：
+// TARGET,序号,目标有效,x偏差,相对距离比例,相似度
+bool parseTargetMessage(
+    char* line,
+    TargetData& target) {
+
   char* token = strtok(line, ",");
 
-  // 消息类型
-  if (token == NULL || strcmp(token, "TARGET") != 0) {
+  // 消息类型必须是 TARGET
+  if (token == NULL ||
+      strcmp(token, "TARGET") != 0) {
     return false;
   }
+
 
   // 1. 序号
   token = strtok(NULL, ",");
+
   if (token == NULL) {
     return false;
   }
-  target.sequence = strtoul(token, NULL, 10);
+
+  target.sequence =
+      strtoul(token, NULL, 10);
+
 
   // 2. 目标是否有效
   token = strtok(NULL, ",");
+
   if (token == NULL) {
     return false;
   }
 
   const int validValue = atoi(token);
 
-  if (validValue != 0 && validValue != 1) {
+  if (validValue != 0 &&
+      validValue != 1) {
     return false;
   }
 
-  target.valid = (validValue == 1);
+  target.valid =
+      (validValue == 1);
 
-  // 3. x 偏差
+
+  // 3. 目标水平偏差
   token = strtok(NULL, ",");
+
   if (token == NULL) {
     return false;
   }
+
   target.xError = atof(token);
 
-  // 4. 目标距离，单位 cm
-  token = strtok(NULL, ",");
-  if (token == NULL) {
-    return false;
-  }
-  target.distanceCm = atof(token);
 
-  // 5. 相似度
+  // 4. 相对距离比例
   token = strtok(NULL, ",");
+
   if (token == NULL) {
     return false;
   }
-  target.similarity = atof(token);
+
+  target.relativeDistance =
+      atof(token);
+
+
+  // 5. 身份相似度
+  token = strtok(NULL, ",");
+
+  if (token == NULL) {
+    return false;
+  }
+
+  target.similarity =
+      atof(token);
+
 
   // 不允许出现额外字段
   if (strtok(NULL, ",") != NULL) {
     return false;
   }
 
-  // 数值范围检查
-  if (target.xError < -1.0f || target.xError > 1.0f) {
+
+  // x偏差范围检查
+  if (target.xError < -1.0f ||
+      target.xError > 1.0f) {
     return false;
   }
 
-  if (target.similarity < 0.0f || target.similarity > 1.0f) {
+
+  // 相似度范围检查
+  if (target.similarity < 0.0f ||
+      target.similarity > 1.0f) {
     return false;
   }
 
-  // 允许 -1 表示距离无效，不允许其他负数
-  if (target.distanceCm < 0.0f &&
-      target.distanceCm != -1.0f) {
+
+  /*
+   * relativeDistance：
+   * -1   表示无效
+   * > 0  表示有效
+   *
+   * 0 或其他负数不符合协议。
+   */
+  if (target.relativeDistance != -1.0f &&
+      target.relativeDistance <= 0.0f) {
     return false;
   }
+
 
   target.receivedAt = millis();
 
+
 #if DEBUG_PRINT
-  Serial.print("TARGET: seq=");
+  Serial.print(F("TARGET: seq="));
   Serial.print(target.sequence);
 
-  Serial.print(", valid=");
+  Serial.print(F(", valid="));
   Serial.print(target.valid);
 
-  Serial.print(", xError=");
-  Serial.print(target.xError);
+  Serial.print(F(", xError="));
+  Serial.print(target.xError, 3);
 
-  Serial.print(", distanceCm=");
-  Serial.print(target.distanceCm);
+  Serial.print(F(", relativeDistance="));
+  Serial.print(target.relativeDistance, 3);
 
-  Serial.print(", similarity=");
-  Serial.println(target.similarity);
+  Serial.print(F(", similarity="));
+  Serial.println(target.similarity, 3);
 #endif
 
   return true;
 }
 
+
 MotionCommand computeAutoFollowCommand(
     const TargetData& target,
     const DistanceData& distance) {
 
-  // 目标无效
+  // 没有检测到有效目标
   if (!target.valid) {
-    return makeStopCommand("target invalid");
+    return makeStopCommand(
+        "target invalid");
   }
 
-  // 当前目标与指定跟随者相似度不足
-  if (target.similarity < SIMILARITY_MIN) {
-    return makeStopCommand("low target similarity");
+
+  // 当前人员与注册人员相似度不足
+  if (target.similarity <
+      SIMILARITY_MIN) {
+    return makeStopCommand(
+        "low target similarity");
   }
 
-  // 距离无效
-  if (target.distanceCm <= 0.0f) {
-    return makeStopCommand("invalid target distance");
+
+  // 相对距离数据无效
+  if (target.relativeDistance <= 0.0f) {
+    return makeStopCommand(
+        "invalid relative distance");
   }
 
-  // 已经达到跟随停止距离
-  if (target.distanceCm <= FOLLOW_STOP_DISTANCE_CM) {
-    return makeStopCommand("target within stop distance");
+
+  // 人已到达注册距离附近或比注册位置更近
+  if (target.relativeDistance <=
+      FOLLOW_STOP_RELATIVE_DISTANCE) {
+
+    return makeStopCommand(
+        "target distance reached");
   }
 
-  // 根据距离计算前进速度
+
+  // 根据相对距离计算前进速度
   const int forwardSpeed =
-      computeForwardSpeedByDistance(target.distanceCm);
+      computeForwardSpeedByRelativeDistance(
+          target.relativeDistance);
+
 
   // 根据水平偏差计算转向速度
-  int turnSpeed = computeTurnSpeed(target.xError);
+  int turnSpeed =
+      computeTurnSpeed(target.xError);
 
-  // 左侧有障碍时，禁止继续向左修正
+
+  // 左侧存在障碍时，禁止继续向左修正
   if (target.xError < 0.0f &&
       isLeftBlocked(distance)) {
     turnSpeed = 0;
   }
 
-  // 右侧有障碍时，禁止继续向右修正
+
+  // 右侧存在障碍时，禁止继续向右修正
   if (target.xError > 0.0f &&
       isRightBlocked(distance)) {
     turnSpeed = 0;
   }
+
 
   MotionCommand cmd;
 

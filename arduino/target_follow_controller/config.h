@@ -22,7 +22,7 @@
 #define EMERGENCY_STOP_ENABLED 1
 
 // USB 手柄转接板通过 I2C 通信
-#define I2C_REMOTE_ENABLED 1
+#define I2C_REMOTE_ENABLED 0
 
 // 串口调试输出
 #define DEBUG_PRINT 1
@@ -110,18 +110,28 @@ const int ULTRA_REAR_ECHO  = A2;
 //
 const int EMERGENCY_STOP_PIN = A3;
 
-
 // ============================================================
 // 6. 自主跟随参数
 // ============================================================
+
+// 指定跟随者的最低相似度
 const float SIMILARITY_MIN = 0.50f;
 
-// 目标距离小于该值时停止跟随
-const float FOLLOW_STOP_DISTANCE_CM = 100.0f;
+/*
+ * 相对距离：
+ * relativeDistance = 注册时肩髋尺度 / 当前肩髋尺度
+ *
+ * < 1：目标比注册位置近
+ * ≈ 1：目标在注册位置附近
+ * > 1：目标比注册位置远
+ * -1 ：当前距离数据无效
+ */
 
-// 目标距离达到该值时允许使用最大速度
-const float FOLLOW_FULL_SPEED_DISTANCE_CM = 250.0f;
+// 相对距离不超过 1.12 时，不再向前运动
+const float FOLLOW_STOP_RELATIVE_DISTANCE = 1.12f;
 
+// 相对距离达到 1.80 后，允许使用最大跟随速度
+const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
 
 // ============================================================
 // 7. 速度与转向参数
@@ -180,12 +190,15 @@ const unsigned long CONTROL_INTERVAL_MS = 20;
 // 10. 公共数据类型
 // ============================================================
 struct TargetData {
-  unsigned long sequence;      // OpenBot 帧序号
-  bool valid;                  // 目标是否有效
-  float xError;                // 水平偏差，范围 -1～1
-  float distanceCm;            // 目标距离，-1 表示无效
-  float similarity;            // 相似度，范围 0～1
-  unsigned long receivedAt;    // Arduino 收到新数据的时间
+  unsigned long sequence;       // 手机端消息序号
+  bool valid;                   // 目标是否有效
+  float xError;                 // 水平偏差，范围 -1～1
+
+  float relativeDistance;       // 注册尺度 / 当前尺度
+                                // >1 更远，<1 更近，-1 无效
+
+  float similarity;             // 身份相似度，范围 0～1
+  unsigned long receivedAt;     // Arduino 收到数据的时间
 };
 
 struct DistanceData {
@@ -230,6 +243,12 @@ extern RobotState currentState;
 
 extern bool hasReceivedTarget;
 extern bool manualModeActive;
+
+// CMD,序号,STOP 触发的停车锁定
+extern bool commandStopActive;
+
+// CMD,序号,ESTOP 触发的软件急停锁定
+extern bool softwareEmergencyActive;
 
 extern RemoteAction remoteAction;
 extern int remoteSpeed;
