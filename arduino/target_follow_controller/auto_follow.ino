@@ -12,10 +12,39 @@ bool hasCountedTargetSequence = false;
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
 
-  return (int)(
-      K_TURN
-      * xError
-      * TURN_SIGN);
+  const float absoluteError = fabs(xError);
+
+  /*
+   * 目标处于画面中央死区内时，不进行转向，
+   * 避免关键点轻微抖动导致左右履带频繁调整。
+   */
+  if (absoluteError <= TARGET_CENTER_X_THRESHOLD) {
+    return 0;
+  }
+
+  /*
+   * 去掉死区后重新映射到 0～1。
+   *
+   * 这样刚超过死区时，转向速度会从0平滑增加，
+   * 不会在0.10附近突然产生较大的转向量。
+   */
+  const float normalizedError =
+      (absoluteError - TARGET_CENTER_X_THRESHOLD)
+      /
+      (1.0f - TARGET_CENTER_X_THRESHOLD);
+
+  const float signedError =
+      (xError > 0.0f)
+          ? normalizedError
+          : -normalizedError;
+
+  const int turnSpeed =
+      (int)(
+          K_TURN
+          * signedError
+          * TURN_SIGN);
+
+  return turnSpeed;
 }
 
 
