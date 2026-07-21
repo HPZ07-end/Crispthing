@@ -144,8 +144,14 @@ MotionCommand chooseSafeCommand(unsigned long now) {
 
   // 优先级 4：目标数据有效性与超时看门狗。
   if (isTargetTimedOut(now)) {
+    resetAutoFollowConfirmation();
+
     currentState = STATE_IDLE;
-    return makeStopCommand(hasReceivedTarget ? "target timeout" : "waiting for target");
+
+    return makeStopCommand(
+        hasReceivedTarget
+            ? "target timeout"
+            : "waiting for target");
   }
 
   // 优先级 5：正常自主跟随。

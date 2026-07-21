@@ -202,6 +202,7 @@ bool handleCommandMessage(char* line) {
     remoteAction = REMOTE_STOP;
 
     requireRemoteNeutralRearm();
+
   }
 
   // ----------------------------------------------------------
@@ -227,6 +228,7 @@ bool handleCommandMessage(char* line) {
     // 防止直接使用切换模式前的旧目标数据。
     hasReceivedTarget = false;
 
+    resetAutoFollowConfirmation();
     requireRemoteNeutralRearm();
   }
 
@@ -259,8 +261,34 @@ bool handleCommandMessage(char* line) {
   return true;
 }
 
+// OpenBot原有程序可能自动发送这些后台消息。
+// 当前自定义控制只使用TARGET和CMD，因此全部忽略。
+bool isOpenBotBackgroundMessage(const char* line) {
+  const size_t length = strlen(line);
+
+  // f：OpenBot功能查询
+  if (strcmp(line, "f") == 0) {
+    return true;
+  }
+
+  if (length > 1) {
+    const char type = line[0];
+
+    // h750、c0,0、s100、v250、w500等
+    if (type == 'h' ||
+        type == 'c' ||
+        type == 's' ||
+        type == 'v' ||
+        type == 'w') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void handleSerialLine(char* line) {
-  // 手机端模式和安全控制指令
+  // 手机端模式与安全控制
   if (startsWith(line, "CMD,")) {
     if (!handleCommandMessage(line)) {
       Serial.println(F("Invalid CMD message."));
@@ -268,7 +296,8 @@ void handleSerialLine(char* line) {
 
     return;
   }
-  // OpenBot 自主跟随数据
+
+  // 手机端目标跟随数据
   if (startsWith(line, "TARGET,")) {
     TargetData target;
 
@@ -282,14 +311,21 @@ void handleSerialLine(char* line) {
     return;
   }
 
-  // 单字符遥控指令
+  // 忽略OpenBot原有后台协议，禁止其直接控制电机
+  if (isOpenBotBackgroundMessage(line)) {
+    return;
+  }
+
+  // 电脑串口单字符调试
   if (strlen(line) == 1) {
     handleRemoteCharacter(line[0]);
     return;
   }
 
+#if DEBUG_PRINT
   Serial.print(F("Unknown message: "));
   Serial.println(line);
+#endif
 }
 
 void readSerialInput() {
