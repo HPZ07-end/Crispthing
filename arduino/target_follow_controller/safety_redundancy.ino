@@ -249,10 +249,16 @@ void applySafeMotionCommand(
   static int lastPrintedLeft = 32767;
   static int lastPrintedRight = 32767;
   static int lastPrintedState = -1;
+  static const char* lastPrintedReason = NULL;
+
+  const bool reasonChanged =
+      lastPrintedReason == NULL ||
+      strcmp(cmd.reason, lastPrintedReason) != 0;
 
   if (appliedLeftSpeed != lastPrintedLeft ||
       appliedRightSpeed != lastPrintedRight ||
-      (int)currentState != lastPrintedState) {
+      (int)currentState != lastPrintedState ||
+      reasonChanged) {
 
     Serial.print(F("State="));
     printRobotState(currentState);
@@ -280,6 +286,8 @@ void applySafeMotionCommand(
 
     lastPrintedState =
         (int)currentState;
+
+    lastPrintedReason = cmd.reason;
   }
 #endif
 

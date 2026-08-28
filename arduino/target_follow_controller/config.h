@@ -12,14 +12,14 @@
 
 // 0：只测试指令，不真正驱动电机
 // 1：允许电机运行
-#define MOTOR_ENABLED 0
+#define MOTOR_ENABLED 1
 
 // 当前暂不启用避障传感器
 #define SENSOR_ENABLED 0
 #define TOF_ENABLED 0
 
 // 急停：A3 接 NC，COM 接 GND
-#define EMERGENCY_STOP_ENABLED 1
+#define EMERGENCY_STOP_ENABLED 0
 
 // USB 手柄转接板通过 I2C 通信
 #define I2C_REMOTE_ENABLED 0
