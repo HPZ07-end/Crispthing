@@ -224,6 +224,23 @@ bool parseTargetMessage(
   Serial.print(F("TARGET: seq="));
   Serial.print(target.sequence);
 
+  static bool hasPreviousTargetRx = false;
+  static unsigned long previousTargetRxMs = 0;
+
+  Serial.print(F(", rx_ms="));
+  Serial.print(target.receivedAt);
+
+  Serial.print(F(", rx_gap_ms="));
+
+  if (hasPreviousTargetRx) {
+    Serial.print(target.receivedAt - previousTargetRxMs);
+  } else {
+    Serial.print(F("NA"));
+  }
+
+  previousTargetRxMs = target.receivedAt;
+  hasPreviousTargetRx = true;
+
   Serial.print(F(", valid="));
   Serial.print(target.valid);
 

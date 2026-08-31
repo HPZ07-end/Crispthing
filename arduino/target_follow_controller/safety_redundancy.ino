@@ -260,11 +260,24 @@ void applySafeMotionCommand(
       (int)currentState != lastPrintedState ||
       reasonChanged) {
 
-    Serial.print(F("State="));
+    Serial.print(F("t_ms="));
+    Serial.print(millis());
+    Serial.print(F(", State="));
     printRobotState(currentState);
 
     Serial.print(F(", reason="));
     Serial.print(cmd.reason);
+
+    Serial.print(F(", target_age_ms="));
+
+    if (hasReceivedTarget) {
+      const unsigned long targetAgeMs =
+          millis() - latestTarget.receivedAt;
+
+      Serial.print(targetAgeMs);
+    } else {
+      Serial.print(F("NA"));
+    }
 
     Serial.print(F(", targetL="));
     Serial.print(targetLeft);

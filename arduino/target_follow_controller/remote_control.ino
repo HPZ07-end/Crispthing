@@ -212,24 +212,27 @@ bool handleCommandMessage(char* line) {
   // 必须先发送 MANUAL 完成安全解除。
   // ----------------------------------------------------------
   else if (strcmp(action, "AUTO") == 0) {
+    // 软件急停仍然禁止直接进入 AUTO。
     if (softwareEmergencyActive) {
       Serial.println(
           F("CMD AUTO rejected: ESTOP latched; send MANUAL first"));
-
       return true;
     }
 
-    commandStopActive = false;
+    // 必须在修改模式标志之前，记住是否需要重新确认。
+    const bool needsFreshTarget =
+        manualModeActive || commandStopActive;
 
+    commandStopActive = false;
     manualModeActive = false;
     remoteAction = REMOTE_STOP;
 
-    // 进入自动模式后必须等待一条新的 TARGET，
-    // 防止直接使用切换模式前的旧目标数据。
-    hasReceivedTarget = false;
-
-    resetAutoFollowConfirmation();
-    requireRemoteNeutralRearm();
+    // 只有真正切换模式，或从 STOP 恢复时才重置。
+    if (needsFreshTarget) {
+      hasReceivedTarget = false;
+      resetAutoFollowConfirmation();
+      requireRemoteNeutralRearm();
+    }
   }
 
   // ----------------------------------------------------------
@@ -329,25 +332,38 @@ void handleSerialLine(char* line) {
 }
 
 void readSerialInput() {
+  // 发生溢出后，持续丢弃字符，直到本行结束。
+  static bool discardUntilNewline = false;
+
   while (Serial.available() > 0) {
     const char c = (char)Serial.read();
 
+    // 换行表示一条消息结束。
     if (c == '\n' || c == '\r') {
-      if (serialIndex > 0) {
+      // 只有未溢出且非空的消息，才能进入解析。
+      if (!discardUntilNewline && serialIndex > 0) {
         serialBuffer[serialIndex] = '\0';
-
         handleSerialLine(serialBuffer);
-
-        serialIndex = 0;
       }
 
-    } else if (serialIndex < sizeof(serialBuffer) - 1) {
-      serialBuffer[serialIndex++] = c;
+      serialIndex = 0;
+      discardUntilNewline = false;
+      continue;
+    }
 
+    // 当前行已经溢出：忽略所有后续普通字符。
+    if (discardUntilNewline) {
+      continue;
+    }
+
+    // 留出一个位置，存放字符串结束符 '\0'。
+    if (serialIndex < sizeof(serialBuffer) - 1) {
+      serialBuffer[serialIndex++] = c;
     } else {
       serialIndex = 0;
+      discardUntilNewline = true;
 
-      Serial.println(F("Serial buffer overflow."));
+      Serial.println(F("Serial buffer overflow: line discarded."));
     }
   }
 }

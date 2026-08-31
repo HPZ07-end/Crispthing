@@ -12,7 +12,7 @@
 
 // 0：只测试指令，不真正驱动电机
 // 1：允许电机运行
-#define MOTOR_ENABLED 1
+#define MOTOR_ENABLED 0
 
 // 当前暂不启用避障传感器
 #define SENSOR_ENABLED 0
@@ -118,7 +118,7 @@ const int EMERGENCY_STOP_PIN = A3;
 const float SIMILARITY_MIN = 0.50f;
 
 // 目标连续多少帧处于较远状态，才允许开始前进
-const uint8_t FAR_TARGET_CONFIRM_FRAMES = 3;
+const uint8_t FAR_TARGET_CONFIRM_FRAMES = 2;
 
 /*
  * 相对距离：
