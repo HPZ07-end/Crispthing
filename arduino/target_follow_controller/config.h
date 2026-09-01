@@ -157,6 +157,21 @@ const int MAX_SPEED = 70;
 const float K_TURN = 70.0f;
 const float TARGET_CENTER_X_THRESHOLD = 0.10f;
 
+/*
+ * 安全距离内原地对准参数：
+ *
+ * 停止状态下，偏差达到 0.15 才开始原地转动；
+ * 已经开始转动后，偏差降到 0.08 才停止。
+ *
+ * 0.08～0.15 为滞回区间，避免视觉偏差波动导致反复启停。
+ */
+const float ALIGN_START_X_THRESHOLD = 0.15f;
+const float ALIGN_STOP_X_THRESHOLD  = 0.08f;
+
+// 原地对准时的最小、最大转向
+const int MIN_ALIGN_TURN_SPEED = 50;
+const int MAX_ALIGN_TURN_SPEED = 70;
+
 // ============================================================
 // 电机输出平滑
 // ============================================================

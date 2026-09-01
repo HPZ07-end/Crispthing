@@ -8,6 +8,9 @@ uint8_t farTargetFrameCount = 0;
 unsigned long lastCountedTargetSequence = 0;
 bool hasCountedTargetSequence = false;
 
+// 记录当前是否正在执行安全距离内的原地对准
+bool aligningInPlace = false;
+
 // 根据目标水平偏差计算转向速度
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
@@ -292,13 +295,100 @@ MotionCommand computeAutoFollowCommand(
   // 人已到达注册距离附近或比注册位置更近
   if (target.relativeDistance <=
       FOLLOW_STOP_RELATIVE_DISTANCE) {
-
+    
+    // 安全距离内，不累计“远目标确认帧”，避免在阈值附近反复启停
     resetAutoFollowConfirmation();
 
-    return makeStopCommand(
-        "target distance reached");
+    const float absoluteXError = 
+        fabs(target.xError);
+
+        /*
+     * 当前尚未原地转动：
+     * 只有偏差达到启动阈值 0.15，才开始转动。
+     */
+    if (!aligningInPlace) {
+
+        if (absoluteXError <
+            ALIGN_START_X_THRESHOLD) {
+
+            return makeStopCommand(
+                "target centered in safe distance");
+        }
+
+        aligningInPlace = true;
+    }
+
+    /*
+     * 当前已经在原地转动：
+     * 只有偏差减小到停止阈值 0.08，才停止转动。
+     */
+    if (aligningInPlace &&
+        absoluteXError <=
+            ALIGN_STOP_X_THRESHOLD) {
+
+        aligningInPlace = false;
+
+        return makeStopCommand(
+            "in-place alignment completed");
+    }
+
+    // 根据人在画面中的左右偏差计算转向量
+    int turnSpeed = 
+        computeTurnSpeed(target.xError);
+
+    /*
+     * computeTurnSpeed 使用 0.10 的普通转弯死区。
+     * 原地对准停止阈值是 0.08，因此在 0.08～0.10 内，
+     * 如果仍处于对准状态，就按最小 PWM 继续转动。
+     */
+    if (turnSpeed == 0) {
+
+        turnSpeed =
+            (target.xError > 0.0f)
+                ? MIN_ALIGN_TURN_SPEED
+                : -MIN_ALIGN_TURN_SPEED;
+
+        turnSpeed *= TURN_SIGN;
+    }
+
+    if (turnSpeed > 0) {
+      turnSpeed = constrain(
+        turnSpeed,
+        MIN_ALIGN_TURN_SPEED,
+        MAX_ALIGN_TURN_SPEED);
+    }
+    else {
+      turnSpeed = constrain(
+        turnSpeed,
+        -MAX_ALIGN_TURN_SPEED,
+        -MIN_ALIGN_TURN_SPEED);
+    }
+
+    // 左侧有障碍，不允许向左原地转动
+    if (target.xError < 0.0f &&
+        isLeftBlocked(distance)) {
+          return makeStopCommand(
+              "left blocked while aligned");
+        }
+
+    // 右侧有障碍，不允许向右原地转动
+    if (target.xError > 0.0f &&
+        isRightBlocked(distance)) {
+          return makeStopCommand(
+              "right blocked while aligned");
+        }    
+
+    MotionCommand cmd;
+
+    // 一侧正转，另一侧反转，实现原地转弯
+    cmd.leftSpeed = turnSpeed;
+    cmd.rightSpeed = -turnSpeed;
+    cmd.reason = "aligned in place";
+
+    return cmd;
   }
 
+  aligningInPlace = false;
   /*
    * 距离滞回：
    *
