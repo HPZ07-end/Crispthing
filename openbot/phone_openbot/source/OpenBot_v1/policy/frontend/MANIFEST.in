@@ -1,2 +1,0 @@
-graft openbot_frontend
-recursive-exclude * *.py[co]
