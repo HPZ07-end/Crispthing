@@ -11,6 +11,12 @@ bool hasCountedTargetSequence = false;
 // 记录当前是否正在执行安全距离内的原地对准
 bool aligningInPlace = false;
 
+// 原地对准启动确认：必须由不同序号、同一方向的 TARGET 连续确认
+uint8_t alignConfirmFrameCount = 0;
+int8_t pendingAlignDirection = 0;
+unsigned long lastCountedAlignSequence = 0;
+bool hasCountedAlignSequence = false;
+
 // 根据目标水平偏差计算转向速度
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
@@ -98,12 +104,29 @@ int computeForwardSpeedByRelativeDistance(
       MAX_SPEED);
 }
 
-}  // namespace
-
-void resetAutoFollowConfirmation() {
+void resetFarTargetConfirmationState() {
   farTargetFrameCount = 0;
   lastCountedTargetSequence = 0;
   hasCountedTargetSequence = false;
+}
+
+void resetAlignConfirmationState() {
+  alignConfirmFrameCount = 0;
+  pendingAlignDirection = 0;
+  lastCountedAlignSequence = 0;
+  hasCountedAlignSequence = false;
+}
+
+void resetAlignmentState() {
+  aligningInPlace = false;
+  resetAlignConfirmationState();
+}
+
+}  // namespace
+
+void resetAutoFollowConfirmation() {
+  resetFarTargetConfirmationState();
+  resetAlignmentState();
 }
 
 void setupAutoFollow() {
@@ -296,8 +319,8 @@ MotionCommand computeAutoFollowCommand(
   if (target.relativeDistance <=
       FOLLOW_STOP_RELATIVE_DISTANCE) {
     
-    // 安全距离内，不累计“远目标确认帧”，避免在阈值附近反复启停
-    resetAutoFollowConfirmation();
+    // 安全距离内只清除远目标确认，不清除正在进行的原地对准状态。
+    resetFarTargetConfirmationState();
 
     const float absoluteXError = 
         fabs(target.xError);
@@ -308,14 +331,53 @@ MotionCommand computeAutoFollowCommand(
      */
     if (!aligningInPlace) {
 
-        if (absoluteXError <
-            ALIGN_START_X_THRESHOLD) {
+      if (absoluteXError <
+          ALIGN_START_X_THRESHOLD) {
 
-            return makeStopCommand(
-                "target centered in safe distance");
+        resetAlignConfirmationState();
+
+        return makeStopCommand(
+            "target centered in safe distance");
+      }
+
+      const int8_t requestedDirection =
+          target.xError > 0.0f ? 1 : -1;
+
+      const bool isNewAlignFrame =
+          !hasCountedAlignSequence ||
+          target.sequence != lastCountedAlignSequence;
+
+      if (isNewAlignFrame) {
+        lastCountedAlignSequence = target.sequence;
+        hasCountedAlignSequence = true;
+
+        if (requestedDirection == pendingAlignDirection) {
+          if (alignConfirmFrameCount < ALIGN_CONFIRM_FRAMES) {
+            alignConfirmFrameCount++;
+          }
+        } else {
+          // 方向改变后，上一方向的确认作废，并从当前帧重新计数。
+          pendingAlignDirection = requestedDirection;
+          alignConfirmFrameCount = 1;
         }
 
-        aligningInPlace = true;
+      #if DEBUG_PRINT
+        Serial.print(F("Alignment confirmation: "));
+        Serial.print(alignConfirmFrameCount);
+        Serial.print(F("/"));
+        Serial.print(ALIGN_CONFIRM_FRAMES);
+        Serial.print(F(", direction="));
+        Serial.println(pendingAlignDirection > 0 ? F("right") : F("left"));
+      #endif
+      }
+
+      if (alignConfirmFrameCount < ALIGN_CONFIRM_FRAMES) {
+        return makeStopCommand(
+            "confirming in-place alignment");
+      }
+
+      aligningInPlace = true;
+      resetAlignConfirmationState();
     }
 
     /*
@@ -326,7 +388,7 @@ MotionCommand computeAutoFollowCommand(
         absoluteXError <=
             ALIGN_STOP_X_THRESHOLD) {
 
-        aligningInPlace = false;
+        resetAlignmentState();
 
         return makeStopCommand(
             "in-place alignment completed");
@@ -388,7 +450,7 @@ MotionCommand computeAutoFollowCommand(
     return cmd;
   }
 
-  aligningInPlace = false;
+  resetAlignmentState();
   /*
    * 距离滞回：
    *

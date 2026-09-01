@@ -168,6 +168,9 @@ const float TARGET_CENTER_X_THRESHOLD = 0.10f;
 const float ALIGN_START_X_THRESHOLD = 0.15f;
 const float ALIGN_STOP_X_THRESHOLD  = 0.08f;
 
+// 必须连续收到多少条不同序号、同方向的 TARGET，才启动原地对准
+const uint8_t ALIGN_CONFIRM_FRAMES = 2;
+
 // 原地对准时的最小、最大转向
 const int MIN_ALIGN_TURN_SPEED = 50;
 const int MAX_ALIGN_TURN_SPEED = 70;
