@@ -12,14 +12,14 @@
 
 // 0：只测试指令，不真正驱动电机
 // 1：允许电机运行
-#define MOTOR_ENABLED 1
+#define MOTOR_ENABLED 0
 
 // 当前暂不启用避障传感器
 #define SENSOR_ENABLED 0
 #define TOF_ENABLED 0
 
 // 急停：A3 接 NC，COM 接 GND
-#define EMERGENCY_STOP_ENABLED 1
+#define EMERGENCY_STOP_ENABLED 0
 
 // USB 手柄转接板通过 I2C 通信
 #define I2C_REMOTE_ENABLED 0
@@ -117,6 +117,9 @@ const int EMERGENCY_STOP_PIN = A3;
 // 指定跟随者的最低相似度
 const float SIMILARITY_MIN = 0.50f;
 
+// 目标连续多少帧处于较远状态，才允许开始前进
+const uint8_t FAR_TARGET_CONFIRM_FRAMES = 2;
+
 /*
  * 相对距离：
  * relativeDistance = 注册时肩髋尺度 / 当前肩髋尺度
@@ -144,8 +147,23 @@ const int MIN_SPEED = 70;
 const int MAX_SPEED = 90;
 
 const float K_TURN = 70.0f;
-const float TARGET_CENTER_X_THRESHOLD = 0.25f;
+const float TARGET_CENTER_X_THRESHOLD = 0.10f;
 
+// ============================================================
+// 电机输出平滑
+// ============================================================
+
+// 是否启用电机速度斜坡
+#define MOTOR_RAMP_ENABLED 1
+
+/*
+ * 每个控制周期最多变化的 PWM 数值。
+ *
+ * 当前控制周期为 20 ms：
+ * 0 → 70 约需 14 个周期，即约 280 ms
+ * 0 → 90 约需 18 个周期，即约 360 ms
+ */
+const int MOTOR_RAMP_STEP = 5;
 
 // ============================================================
 // 8. 避障参数
@@ -163,7 +181,7 @@ const float TOF_FAR_CM       = 180.0f;
 // ============================================================
 
 // OpenBot 目标数据超时
-const unsigned long TARGET_TIMEOUT_MS = 500;
+const unsigned long TARGET_TIMEOUT_MS = 1000;
 
 // 电脑串口单字符遥控超时
 const unsigned long REMOTE_TIMEOUT_MS = 1500;
@@ -297,6 +315,8 @@ MotionCommand computeObstacleCommand(
 // 14. 自主跟随模块接口
 // ============================================================
 void setupAutoFollow();
+
+void resetAutoFollowConfirmation();
 
 bool parseTargetMessage(
     char* line,

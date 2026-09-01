@@ -1,6 +1,36 @@
 #include "config.h"
 
 namespace {
+
+// 当前真正施加到左右履带的速度
+int appliedLeftSpeed = 0;
+int appliedRightSpeed = 0;
+
+
+// 让 current 每次最多向 target 靠近 step
+int approachSpeed(
+    int current,
+    int target,
+    int step) {
+
+  if (current < target) {
+    current += step;
+
+    if (current > target) {
+      current = target;
+    }
+  }
+  else if (current > target) {
+    current -= step;
+
+    if (current < target) {
+      current = target;
+    }
+  }
+
+  return current;
+}
+
 bool isEmergencyStopActive() {
 #if EMERGENCY_STOP_ENABLED
   return digitalRead(EMERGENCY_STOP_PIN) == HIGH;
@@ -144,8 +174,14 @@ MotionCommand chooseSafeCommand(unsigned long now) {
 
   // 优先级 4：目标数据有效性与超时看门狗。
   if (isTargetTimedOut(now)) {
+    resetAutoFollowConfirmation();
+
     currentState = STATE_IDLE;
-    return makeStopCommand(hasReceivedTarget ? "target timeout" : "waiting for target");
+
+    return makeStopCommand(
+        hasReceivedTarget
+            ? "target timeout"
+            : "waiting for target");
   }
 
   // 优先级 5：正常自主跟随。
@@ -153,41 +189,130 @@ MotionCommand chooseSafeCommand(unsigned long now) {
   return computeAutoFollowCommand(latestTarget, latestDistance);
 }
 
-void applySafeMotionCommand(const MotionCommand& cmd) {
-  const int safeLeft =
-      constrain(cmd.leftSpeed, -MAX_SPEED, MAX_SPEED);
+void applySafeMotionCommand(
+    const MotionCommand& cmd) {
 
-  const int safeRight =
-      constrain(cmd.rightSpeed, -MAX_SPEED, MAX_SPEED);
+  const int targetLeft =
+      constrain(
+          cmd.leftSpeed,
+          -MAX_SPEED,
+          MAX_SPEED);
+
+  const int targetRight =
+      constrain(
+          cmd.rightSpeed,
+          -MAX_SPEED,
+          MAX_SPEED);
+
+
+  /*
+   * 只要控制命令要求左右履带都停车，
+   * 就立即归零，不使用减速斜坡。
+   *
+   * 因此以下情况都能立即停车：
+   * - 目标丢失
+   * - 距离数据无效
+   * - 到达跟随距离
+   * - TARGET 超时
+   * - MANUAL / STOP / ESTOP
+   * - 硬件急停
+   */
+  if (targetLeft == 0 &&
+      targetRight == 0) {
+
+    appliedLeftSpeed = 0;
+    appliedRightSpeed = 0;
+  }
+  else {
+
+#if MOTOR_RAMP_ENABLED
+    appliedLeftSpeed =
+        approachSpeed(
+            appliedLeftSpeed,
+            targetLeft,
+            MOTOR_RAMP_STEP);
+
+    appliedRightSpeed =
+        approachSpeed(
+            appliedRightSpeed,
+            targetRight,
+            MOTOR_RAMP_STEP);
+#else
+    appliedLeftSpeed = targetLeft;
+    appliedRightSpeed = targetRight;
+#endif
+  }
+
 
 #if DEBUG_PRINT
-  // 只在状态或速度变化时打印，避免串口输出阻塞控制循环。
+  // 打印实际施加的速度，而不是尚未达到的目标速度
   static int lastPrintedLeft = 32767;
   static int lastPrintedRight = 32767;
   static int lastPrintedState = -1;
+  static const char* lastPrintedReason = NULL;
 
-  if (safeLeft != lastPrintedLeft ||
-      safeRight != lastPrintedRight ||
-      (int)currentState != lastPrintedState) {
+  const bool reasonChanged =
+      lastPrintedReason == NULL ||
+      strcmp(cmd.reason, lastPrintedReason) != 0;
 
-    Serial.print(F("State="));
+  if (appliedLeftSpeed != lastPrintedLeft ||
+      appliedRightSpeed != lastPrintedRight ||
+      (int)currentState != lastPrintedState ||
+      reasonChanged) {
+
+    Serial.print(F("t_ms="));
+    Serial.print(millis());
+    Serial.print(F(", State="));
     printRobotState(currentState);
+
     Serial.print(F(", reason="));
     Serial.print(cmd.reason);
-    Serial.print(F(", L="));
-    Serial.print(safeLeft);
-    Serial.print(F(", R="));
-    Serial.println(safeRight);
 
-    lastPrintedLeft = safeLeft;
-    lastPrintedRight = safeRight;
-    lastPrintedState = (int)currentState;
+    Serial.print(F(", target_age_ms="));
+
+    if (hasReceivedTarget) {
+      const unsigned long targetAgeMs =
+          millis() - latestTarget.receivedAt;
+
+      Serial.print(targetAgeMs);
+    } else {
+      Serial.print(F("NA"));
+    }
+
+    Serial.print(F(", targetL="));
+    Serial.print(targetLeft);
+
+    Serial.print(F(", targetR="));
+    Serial.print(targetRight);
+
+    Serial.print(F(", L="));
+    Serial.print(appliedLeftSpeed);
+
+    Serial.print(F(", R="));
+    Serial.println(appliedRightSpeed);
+
+    lastPrintedLeft =
+        appliedLeftSpeed;
+
+    lastPrintedRight =
+        appliedRightSpeed;
+
+    lastPrintedState =
+        (int)currentState;
+
+    lastPrintedReason = cmd.reason;
   }
 #endif
 
-  setMotorSpeed(safeLeft, safeRight);
+
+  setMotorSpeed(
+      appliedLeftSpeed,
+      appliedRightSpeed);
 }
 
 void stopCar() {
+  appliedLeftSpeed = 0;
+  appliedRightSpeed = 0;
+
   setMotorSpeed(0, 0);
 }

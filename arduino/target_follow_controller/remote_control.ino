@@ -202,6 +202,7 @@ bool handleCommandMessage(char* line) {
     remoteAction = REMOTE_STOP;
 
     requireRemoteNeutralRearm();
+
   }
 
   // ----------------------------------------------------------
@@ -211,23 +212,27 @@ bool handleCommandMessage(char* line) {
   // 必须先发送 MANUAL 完成安全解除。
   // ----------------------------------------------------------
   else if (strcmp(action, "AUTO") == 0) {
+    // 软件急停仍然禁止直接进入 AUTO。
     if (softwareEmergencyActive) {
       Serial.println(
           F("CMD AUTO rejected: ESTOP latched; send MANUAL first"));
-
       return true;
     }
 
-    commandStopActive = false;
+    // 必须在修改模式标志之前，记住是否需要重新确认。
+    const bool needsFreshTarget =
+        manualModeActive || commandStopActive;
 
+    commandStopActive = false;
     manualModeActive = false;
     remoteAction = REMOTE_STOP;
 
-    // 进入自动模式后必须等待一条新的 TARGET，
-    // 防止直接使用切换模式前的旧目标数据。
-    hasReceivedTarget = false;
-
-    requireRemoteNeutralRearm();
+    // 只有真正切换模式，或从 STOP 恢复时才重置。
+    if (needsFreshTarget) {
+      hasReceivedTarget = false;
+      resetAutoFollowConfirmation();
+      requireRemoteNeutralRearm();
+    }
   }
 
   // ----------------------------------------------------------
@@ -259,8 +264,34 @@ bool handleCommandMessage(char* line) {
   return true;
 }
 
+// OpenBot原有程序可能自动发送这些后台消息。
+// 当前自定义控制只使用TARGET和CMD，因此全部忽略。
+bool isOpenBotBackgroundMessage(const char* line) {
+  const size_t length = strlen(line);
+
+  // f：OpenBot功能查询
+  if (strcmp(line, "f") == 0) {
+    return true;
+  }
+
+  if (length > 1) {
+    const char type = line[0];
+
+    // h750、c0,0、s100、v250、w500等
+    if (type == 'h' ||
+        type == 'c' ||
+        type == 's' ||
+        type == 'v' ||
+        type == 'w') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void handleSerialLine(char* line) {
-  // 手机端模式和安全控制指令
+  // 手机端模式与安全控制
   if (startsWith(line, "CMD,")) {
     if (!handleCommandMessage(line)) {
       Serial.println(F("Invalid CMD message."));
@@ -268,7 +299,8 @@ void handleSerialLine(char* line) {
 
     return;
   }
-  // OpenBot 自主跟随数据
+
+  // 手机端目标跟随数据
   if (startsWith(line, "TARGET,")) {
     TargetData target;
 
@@ -282,36 +314,56 @@ void handleSerialLine(char* line) {
     return;
   }
 
-  // 单字符遥控指令
+  // 忽略OpenBot原有后台协议，禁止其直接控制电机
+  if (isOpenBotBackgroundMessage(line)) {
+    return;
+  }
+
+  // 电脑串口单字符调试
   if (strlen(line) == 1) {
     handleRemoteCharacter(line[0]);
     return;
   }
 
+#if DEBUG_PRINT
   Serial.print(F("Unknown message: "));
   Serial.println(line);
+#endif
 }
 
 void readSerialInput() {
+  // 发生溢出后，持续丢弃字符，直到本行结束。
+  static bool discardUntilNewline = false;
+
   while (Serial.available() > 0) {
     const char c = (char)Serial.read();
 
+    // 换行表示一条消息结束。
     if (c == '\n' || c == '\r') {
-      if (serialIndex > 0) {
+      // 只有未溢出且非空的消息，才能进入解析。
+      if (!discardUntilNewline && serialIndex > 0) {
         serialBuffer[serialIndex] = '\0';
-
         handleSerialLine(serialBuffer);
-
-        serialIndex = 0;
       }
 
-    } else if (serialIndex < sizeof(serialBuffer) - 1) {
-      serialBuffer[serialIndex++] = c;
+      serialIndex = 0;
+      discardUntilNewline = false;
+      continue;
+    }
 
+    // 当前行已经溢出：忽略所有后续普通字符。
+    if (discardUntilNewline) {
+      continue;
+    }
+
+    // 留出一个位置，存放字符串结束符 '\0'。
+    if (serialIndex < sizeof(serialBuffer) - 1) {
+      serialBuffer[serialIndex++] = c;
     } else {
       serialIndex = 0;
+      discardUntilNewline = true;
 
-      Serial.println(F("Serial buffer overflow."));
+      Serial.println(F("Serial buffer overflow: line discarded."));
     }
   }
 }

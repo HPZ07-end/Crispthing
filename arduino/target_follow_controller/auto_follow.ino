@@ -2,14 +2,49 @@
 
 namespace {
 
+uint8_t farTargetFrameCount = 0;
+
+// 记录上一条参与确认的TARGET序号，避免同一帧重复计数
+unsigned long lastCountedTargetSequence = 0;
+bool hasCountedTargetSequence = false;
+
 // 根据目标水平偏差计算转向速度
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
 
-  return (int)(
-      K_TURN
-      * xError
-      * TURN_SIGN);
+  const float absoluteError = fabs(xError);
+
+  /*
+   * 目标处于画面中央死区内时，不进行转向，
+   * 避免关键点轻微抖动导致左右履带频繁调整。
+   */
+  if (absoluteError <= TARGET_CENTER_X_THRESHOLD) {
+    return 0;
+  }
+
+  /*
+   * 去掉死区后重新映射到 0～1。
+   *
+   * 这样刚超过死区时，转向速度会从0平滑增加，
+   * 不会在0.10附近突然产生较大的转向量。
+   */
+  const float normalizedError =
+      (absoluteError - TARGET_CENTER_X_THRESHOLD)
+      /
+      (1.0f - TARGET_CENTER_X_THRESHOLD);
+
+  const float signedError =
+      (xError > 0.0f)
+          ? normalizedError
+          : -normalizedError;
+
+  const int turnSpeed =
+      (int)(
+          K_TURN
+          * signedError
+          * TURN_SIGN);
+
+  return turnSpeed;
 }
 
 
@@ -62,6 +97,11 @@ int computeForwardSpeedByRelativeDistance(
 
 }  // namespace
 
+void resetAutoFollowConfirmation() {
+  farTargetFrameCount = 0;
+  lastCountedTargetSequence = 0;
+  hasCountedTargetSequence = false;
+}
 
 void setupAutoFollow() {
   // 当前自主跟随模块不需要额外硬件初始化
@@ -184,6 +224,23 @@ bool parseTargetMessage(
   Serial.print(F("TARGET: seq="));
   Serial.print(target.sequence);
 
+  static bool hasPreviousTargetRx = false;
+  static unsigned long previousTargetRxMs = 0;
+
+  Serial.print(F(", rx_ms="));
+  Serial.print(target.receivedAt);
+
+  Serial.print(F(", rx_gap_ms="));
+
+  if (hasPreviousTargetRx) {
+    Serial.print(target.receivedAt - previousTargetRxMs);
+  } else {
+    Serial.print(F("NA"));
+  }
+
+  previousTargetRxMs = target.receivedAt;
+  hasPreviousTargetRx = true;
+
   Serial.print(F(", valid="));
   Serial.print(target.valid);
 
@@ -207,14 +264,17 @@ MotionCommand computeAutoFollowCommand(
 
   // 没有检测到有效目标
   if (!target.valid) {
+    resetAutoFollowConfirmation();
+
     return makeStopCommand(
         "target invalid");
   }
 
 
   // 当前人员与注册人员相似度不足
-  if (target.similarity <
-      SIMILARITY_MIN) {
+  if (target.similarity < SIMILARITY_MIN) {
+    resetAutoFollowConfirmation();
+
     return makeStopCommand(
         "low target similarity");
   }
@@ -222,6 +282,8 @@ MotionCommand computeAutoFollowCommand(
 
   // 相对距离数据无效
   if (target.relativeDistance <= 0.0f) {
+    resetAutoFollowConfirmation();
+
     return makeStopCommand(
         "invalid relative distance");
   }
@@ -231,10 +293,45 @@ MotionCommand computeAutoFollowCommand(
   if (target.relativeDistance <=
       FOLLOW_STOP_RELATIVE_DISTANCE) {
 
+    resetAutoFollowConfirmation();
+
     return makeStopCommand(
         "target distance reached");
   }
 
+  /*
+  * 主循环约50 Hz，而手机TARGET约5 Hz。
+  * 只有收到不同sequence的新TARGET时才计数，
+  * 防止同一条TARGET在多个控制周期内重复累计。
+  */
+  const bool isNewTargetFrame =
+      !hasCountedTargetSequence ||
+      target.sequence != lastCountedTargetSequence;
+
+  if (isNewTargetFrame) {
+    lastCountedTargetSequence = target.sequence;
+    hasCountedTargetSequence = true;
+
+    if (farTargetFrameCount <
+        FAR_TARGET_CONFIRM_FRAMES) {
+
+      farTargetFrameCount++;
+    }
+
+  #if DEBUG_PRINT
+    Serial.print(F("Far target confirmation: "));
+    Serial.print(farTargetFrameCount);
+    Serial.print(F("/"));
+    Serial.println(FAR_TARGET_CONFIRM_FRAMES);
+  #endif
+  }
+
+  if (farTargetFrameCount <
+      FAR_TARGET_CONFIRM_FRAMES) {
+
+    return makeStopCommand(
+        "confirming far target");
+  }
 
   // 根据相对距离计算前进速度
   const int forwardSpeed =
