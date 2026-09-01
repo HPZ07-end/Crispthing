@@ -102,16 +102,14 @@ def build_tests() -> tuple[TestStep, ...]:
             expected=("action=AUTO", "waiting for target"),
         ),
         TestStep(
-            name="T02 连续三条不同远目标后启动",
+            name="T02 连续两条不同远目标后启动",
             packets=(
                 "TARGET,101,1,0.000,1.500,0.818",
                 "TARGET,102,1,0.000,1.500,0.818",
-                "TARGET,103,1,0.000,1.500,0.818",
             ),
             expected=(
-                "Far target confirmation: 1/3",
-                "Far target confirmation: 2/3",
-                "Far target confirmation: 3/3",
+                "Far target confirmation: 1/2",
+                "Far target confirmation: 2/2",
                 "reason=auto follow",
             ),
             wait_after_each=0.10,
@@ -129,7 +127,7 @@ def build_tests() -> tuple[TestStep, ...]:
                 "TARGET,105,1,0.000,1.500,0.818",
                 "TARGET,105,1,0.000,1.500,0.818",
             ),
-            expected=("Far target confirmation: 1/3",),
+            expected=("Far target confirmation: 1/2",),
             wait_after_each=0.10,
             settle_time=0.25,
         ),
@@ -149,8 +147,39 @@ def build_tests() -> tuple[TestStep, ...]:
             expected=("low target similarity", "L=0", "R=0"),
         ),
         TestStep(
-            name="T08 MANUAL 退出自动模式",
-            packets=("CMD,109,MANUAL",),
+            name="T08 滞回区内不得重新启动",
+            packets=(
+                "CMD,109,AUTO",
+                "TARGET,110,1,0.000,1.150,0.818",
+                "TARGET,111,1,0.000,1.150,0.818",
+            ),
+            expected=("waiting for restart distance", "L=0", "R=0"),
+        ),
+        TestStep(
+            name="T09 达到重启阈值并连续两帧后启动",
+            packets=(
+                "TARGET,112,1,0.000,1.170,0.818",
+                "TARGET,113,1,0.000,1.170,0.818",
+            ),
+            expected=(
+                "Far target confirmation: 1/2",
+                "Far target confirmation: 2/2",
+                "reason=auto follow",
+            ),
+        ),
+        TestStep(
+            name="T10 运行中进入滞回区仍继续运行",
+            packets=("TARGET,114,1,0.000,1.150,0.818",),
+            expected=("reason=auto follow",),
+        ),
+        TestStep(
+            name="T11 到达停止阈值立即停车",
+            packets=("TARGET,115,1,0.000,1.100,0.818",),
+            expected=("target distance reached", "L=0", "R=0"),
+        ),
+        TestStep(
+            name="T12 MANUAL 退出自动模式",
+            packets=("CMD,116,MANUAL",),
             expected=("action=MANUAL", "remote stop"),
         ),
     )

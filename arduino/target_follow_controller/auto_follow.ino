@@ -300,6 +300,30 @@ MotionCommand computeAutoFollowCommand(
   }
 
   /*
+   * 距离滞回：
+   *
+   * 尚未完成两帧确认时，只有目标达到重新启动阈值，
+   * 才允许累计确认帧。停止阈值与重新启动阈值之间的
+   * 1.12～1.16 区域保持停车，避免阈值附近反复启停。
+   *
+   * 一旦已经完成确认并开始运行，本判断不再阻止运动；
+   * 运行中仍持续检查每条 TARGET，并在距离 <= 1.12 时停车。
+   */
+  const bool startAlreadyConfirmed =
+      farTargetFrameCount >=
+      FAR_TARGET_CONFIRM_FRAMES;
+
+  if (!startAlreadyConfirmed &&
+      target.relativeDistance <
+          FOLLOW_RESTART_RELATIVE_DISTANCE) {
+
+    resetAutoFollowConfirmation();
+
+    return makeStopCommand(
+        "waiting for restart distance");
+  }
+
+  /*
   * 主循环约50 Hz，而手机TARGET约5 Hz。
   * 只有收到不同sequence的新TARGET时才计数，
   * 防止同一条TARGET在多个控制周期内重复累计。

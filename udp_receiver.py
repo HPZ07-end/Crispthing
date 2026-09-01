@@ -1,27 +1,20 @@
 import socket
 
 HOST = "0.0.0.0"
-PORT = 5005  # 必须与手机端设置一致
+PORT = 5005
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((HOST, PORT))
 
-print(f"正在监听 UDP 端口 {PORT}...")
-print("按 Ctrl+C 停止。\n")
+print(f"Listening for UDP packets on {HOST}:{PORT}")
+print("Press Ctrl+C to stop.")
 
 try:
     while True:
-        data, address = sock.recvfrom(2048)
-
-        try:
-            message = data.decode("utf-8").strip()
-        except UnicodeDecodeError:
-            message = repr(data)
-
-        print(f"{address[0]}:{address[1]} -> {message}")
-
+        data, address = sock.recvfrom(4096)
+        text = data.decode("utf-8", errors="replace")
+        print(f"{address[0]}:{address[1]} -> {text.rstrip()}")
 except KeyboardInterrupt:
-    print("\n监听已停止。")
-
+    print("\nStopped.")
 finally:
     sock.close()

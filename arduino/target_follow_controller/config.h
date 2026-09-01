@@ -12,7 +12,7 @@
 
 // 0：只测试指令，不真正驱动电机
 // 1：允许电机运行
-#define MOTOR_ENABLED 0
+#define MOTOR_ENABLED 1
 
 // 当前暂不启用避障传感器
 #define SENSOR_ENABLED 0
@@ -34,8 +34,8 @@
 //
 // 当前左右通道已经按照你的实车结果交换：
 //
-// 左侧履带：PWM=D6，方向=D9/D10
-// 右侧履带：PWM=D5，方向=D7/D8
+// M2 左侧履带：PWM=D6，方向=D9/D10
+// M1 右侧履带：PWM=D5，方向=D7/D8
 //
 const int LEFT_PWM  = 6;
 const int LEFT_IN1  = 12;
@@ -50,7 +50,7 @@ const int RIGHT_IN2 = 8;
 #define RIGHT_TRACK_DIR -1
 
 // 自主跟随转向符号
-#define TURN_SIGN 1
+#define TURN_SIGN -1
 
 
 // ============================================================
@@ -117,7 +117,8 @@ const int EMERGENCY_STOP_PIN = A3;
 // 指定跟随者的最低相似度
 const float SIMILARITY_MIN = 0.50f;
 
-// 目标连续多少帧处于较远状态，才允许开始前进
+// OpenBot 手机端已先完成连续 3 帧确认；
+// Arduino 再确认 2 条序号不同的有效 TARGET 后才允许开始前进。
 const uint8_t FAR_TARGET_CONFIRM_FRAMES = 2;
 
 /*
@@ -133,6 +134,13 @@ const uint8_t FAR_TARGET_CONFIRM_FRAMES = 2;
 // 相对距离不超过 1.12 时，不再向前运动
 const float FOLLOW_STOP_RELATIVE_DISTANCE = 1.12f;
 
+/*
+ * 停车后，目标必须重新远到 1.16，才开始累计 Arduino 端的
+ * 2 条确认帧。1.12～1.16 是滞回区间，用于避免距离估计在
+ * 停止阈值附近抖动时反复启停。
+ */
+const float FOLLOW_RESTART_RELATIVE_DISTANCE = 1.16f;
+
 // 相对距离达到 1.80 后，允许使用最大跟随速度
 const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
 
@@ -144,7 +152,7 @@ const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
 // 后续稳定后可逐步提高，但不要直接恢复到很高速度。
 //
 const int MIN_SPEED = 70;
-const int MAX_SPEED = 90;
+const int MAX_SPEED = 70;
 
 const float K_TURN = 70.0f;
 const float TARGET_CENTER_X_THRESHOLD = 0.10f;

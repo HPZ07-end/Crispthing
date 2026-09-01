@@ -43,6 +43,17 @@ bool isTargetTimedOut(unsigned long now) {
   return !hasReceivedTarget || now - latestTarget.receivedAt > TARGET_TIMEOUT_MS;
 }
 
+// 无论是否允许电机运动，都可以调用该函数将驱动输入锁定为安全电平。
+void forceMotorOutputsOff() {
+  digitalWrite(LEFT_IN1, LOW);
+  digitalWrite(LEFT_IN2, LOW);
+  digitalWrite(RIGHT_IN1, LOW);
+  digitalWrite(RIGHT_IN2, LOW);
+
+  analogWrite(LEFT_PWM, 0);
+  analogWrite(RIGHT_PWM, 0);
+}
+
 void setMotor(int pwmPin, int in1Pin, int in2Pin, int speed) {
 #if MOTOR_ENABLED
   speed = constrain(speed, -255, 255);
@@ -61,10 +72,12 @@ void setMotor(int pwmPin, int in1Pin, int in2Pin, int speed) {
     analogWrite(pwmPin, 0);
   }
 #else
-  (void)pwmPin;
-  (void)in1Pin;
-  (void)in2Pin;
   (void)speed;
+
+  // 禁止运动命令时仍主动保持该电机通道关闭。
+  digitalWrite(in1Pin, LOW);
+  digitalWrite(in2Pin, LOW);
+  analogWrite(pwmPin, 0);
 #endif
 }
 
@@ -75,6 +88,9 @@ void setMotorSpeed(int leftSpeed, int rightSpeed) {
 #else
   (void)leftSpeed;
   (void)rightSpeed;
+
+  // MOTOR_ENABLED=0 不是“不管引脚”，而是主动安全关闭。
+  forceMotorOutputsOff();
 #endif
 }
 
@@ -97,7 +113,18 @@ void setupSafetyRedundancy() {
   pinMode(EMERGENCY_STOP_PIN, INPUT_PULLUP);
 #endif
 
-#if MOTOR_ENABLED
+  /*
+   * 无论 MOTOR_ENABLED 是 0 还是 1，都必须主动控制电机引脚。
+   * 先将输出锁存器预置为 LOW，再切换为 OUTPUT，减少切换瞬间毛刺，
+   * 避免驱动板重新上电时 PWM/方向输入悬空。
+   */
+  digitalWrite(LEFT_PWM, LOW);
+  digitalWrite(LEFT_IN1, LOW);
+  digitalWrite(LEFT_IN2, LOW);
+  digitalWrite(RIGHT_PWM, LOW);
+  digitalWrite(RIGHT_IN1, LOW);
+  digitalWrite(RIGHT_IN2, LOW);
+
   pinMode(LEFT_PWM, OUTPUT);
   pinMode(LEFT_IN1, OUTPUT);
   pinMode(LEFT_IN2, OUTPUT);
@@ -105,9 +132,7 @@ void setupSafetyRedundancy() {
   pinMode(RIGHT_IN1, OUTPUT);
   pinMode(RIGHT_IN2, OUTPUT);
 
-  // 上电后第一时间关闭全部电机输出。
-  setMotorSpeed(0, 0);
-#endif
+  forceMotorOutputsOff();
 }
 
 MotionCommand makeStopCommand(const char* reason) {
