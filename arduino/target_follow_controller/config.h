@@ -9,14 +9,24 @@
 // ============================================================
 // 1. 功能开关
 // ============================================================
-
-// 0：只测试指令，不真正驱动电机
-// 1：允许电机运行
+// 下地低速联调：允许电机运行。
+// 上传前必须确认车头传感器、停车阈值和物理断电手段均可用。
 #define MOTOR_ENABLED 1
 
-// 当前暂不启用避障传感器
-#define SENSOR_ENABLED 0
+// 总传感器开关
+#define SENSOR_ENABLED 1
+
+// 四个方向必须独立启用。STM32 尚未接入时，只启用车头传感器。
+// 这样可避免初始化未接线的引脚，也可避免 D12 与电机方向引脚冲突。
+#define ULTRA_LEFT_ENABLED  0
+#define ULTRA_FRONT_ENABLED 1
+#define ULTRA_RIGHT_ENABLED 0
+#define ULTRA_REAR_ENABLED  0
+
 #define TOF_ENABLED 0
+
+// 下地联调阶段保留测距日志；稳定后可改为 0，减少串口输出。
+#define ULTRASONIC_TEST_PRINT_ENABLED 1
 
 // 急停：A3 接 NC，COM 接 GND
 #define EMERGENCY_STOP_ENABLED 0
@@ -36,7 +46,7 @@
 //
 // 当前左右通道已经按照你的实车结果交换：
 //
-// M2 左侧履带：PWM=D6，方向=D9/D10
+// M2 左侧履带：PWM=D6，方向=D12/D13
 // M1 右侧履带：PWM=D5，方向=D7/D8
 //
 const int LEFT_PWM  = 6;
@@ -79,14 +89,15 @@ const unsigned long REMOTE_POLL_INTERVAL_MS = 20;
 // 4. 距离传感器引脚
 // ============================================================
 //
-// 当前 SENSOR_ENABLED=0，这些引脚不会被初始化。
-// 后续正式接避障传感器时再根据实际硬件确认。
+// 当前只启用车头：商家扩展板已将 TRIG/ECHO 接到 A4/A5。
+// 其余方向留作 STM32 到货后的接口定义，不会被初始化或读取。
 //
 const int ULTRA_LEFT_TRIG  = 2;
 const int ULTRA_LEFT_ECHO  = 3;
 
-const int ULTRA_FRONT_TRIG = 4;
-const int ULTRA_FRONT_ECHO = 11;
+// 车头超声波接口：商家扩展板固定连接到 A4/A5
+const int ULTRA_FRONT_TRIG = A4;
+const int ULTRA_FRONT_ECHO = A5;
 
 const int ULTRA_RIGHT_TRIG = 12;
 const int ULTRA_RIGHT_ECHO = A0;
@@ -174,18 +185,17 @@ const int MOTOR_PWM_LIMIT = 90;
 const float K_TURN = 70.0f;
 const float TARGET_CENTER_X_THRESHOLD = 0.10f;
 
-/*
- * 安全距离内原地对准参数：
- *
- * 停止状态下，偏差达到 0.15 才开始原地转动；
- * 已经开始转动后，偏差降到 0.08 才停止。
- *
- * 0.08～0.15 为滞回区间，避免视觉偏差波动导致反复启停。
- */
-const float ALIGN_START_X_THRESHOLD = 0.15f;
-const float ALIGN_STOP_X_THRESHOLD  = 0.08f;
+// ============================================================
+// 近距离原地对准参数
+// ============================================================
 
-// 必须连续收到多少条不同序号、同方向的 TARGET，才启动原地对准
+// 尚未进入对准时，水平偏差达到 0.15 才开始累计确认帧。
+const float ALIGN_START_X_THRESHOLD = 0.15f;
+
+// 已进入对准后，偏差降到 0.08 才退出，形成启动/停止滞回。
+const float ALIGN_STOP_X_THRESHOLD = 0.08f;
+
+// 必须连续收到两条序号不同、且偏转方向一致的 TARGET 才启动。
 const uint8_t ALIGN_CONFIRM_FRAMES = 2;
 
 // 原地对准时的最小、最大转向
@@ -211,9 +221,31 @@ const int MOTOR_RAMP_STEP = 5;
 // ============================================================
 // 8. 避障参数
 // ============================================================
-const float ULTRA_FRONT_SAFE_CM = 45.0f;
+// 下地初测保留较大的制动余量：连续两帧不超过 60 cm 即停车。
+const float ULTRA_FRONT_SAFE_CM = 60.0f;
+
+// 停车后必须连续测到至少 75 cm 才能解除，形成 15 cm 滞回区。
+const float ULTRA_FRONT_RELEASE_CM = 75.0f;
+
 const float ULTRA_SIDE_SAFE_CM  = 35.0f;
 const float ULTRA_REAR_SAFE_CM  = 35.0f;
+
+// JSN-SR04T 常见近距离盲区约 20 cm；低于此值仍按“太近”处理，
+// 但串口会标成 BELOW_MIN，提醒该数值本身不宜当作精确距离。
+const float ULTRA_MIN_RELIABLE_CM = 20.0f;
+const float ULTRA_MAX_RELIABLE_CM = 500.0f;
+
+// 单个方向每 80 ms 采样一次。两帧确认后，典型判定延迟约 160 ms。
+const unsigned long ULTRA_SAMPLE_INTERVAL_MS = 80;
+
+// 20 ms 约对应 3.4 m 单程测距，足够覆盖当前室内下地测试范围，
+// 同时减少无回波时 pulseIn 对串口和跟随控制循环的阻塞。
+const unsigned long ULTRA_ECHO_TIMEOUT_US = 20000;
+
+// 停车要求连续 2 帧，兼顾响应速度与毛刺过滤；
+// 解除要求连续 3 帧，避免障碍边缘晃动时过早重新起步。
+const uint8_t ULTRA_BLOCK_CONFIRM_SAMPLES = 2;
+const uint8_t ULTRA_RELEASE_CONFIRM_SAMPLES = 3;
 
 const float TOF_TOO_CLOSE_CM = 80.0f;
 const float TOF_FAR_CM       = 180.0f;
@@ -268,6 +300,7 @@ struct DistanceData {
   float ultraRightCm;
   float ultraRearCm;
   float tofFrontCm;
+  unsigned long sampledAt;
 };
 
 struct MotionCommand {
