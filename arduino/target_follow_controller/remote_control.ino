@@ -72,7 +72,7 @@ void setRemoteAction(RemoteAction action) {
 
 // ============================================================
 // 电脑串口遥控
-// f：前进
+// u：前进
 // b：后退
 // l：左转
 // r：右转
@@ -92,7 +92,7 @@ void handleRemoteCharacter(char command) {
     return;
   }
 
-  if (command == 'f') {
+  if (command == 'u') {
     setRemoteAction(REMOTE_FORWARD);
 
   } else if (command == 'b') {
@@ -128,8 +128,179 @@ void handleRemoteCharacter(char command) {
 #endif
 }
 
+// ============================================================
+// 解析手机控制指令
+//
+// CMD,序号,STOP
+// CMD,序号,MANUAL
+// CMD,序号,AUTO
+// CMD,序号,ESTOP
+// ============================================================
+bool handleCommandMessage(char* line) {
+  char* token = strtok(line, ",");
+
+  // 第一个字段必须是 CMD
+  if (token == NULL ||
+      strcmp(token, "CMD") != 0) {
+    return false;
+  }
+
+  // 读取序号
+  token = strtok(NULL, ",");
+
+  if (token == NULL) {
+    return false;
+  }
+
+  char* endPointer = NULL;
+
+  const unsigned long sequence =
+      strtoul(token, &endPointer, 10);
+
+  // 序号必须完全由数字组成
+  if (token[0] == '\0' ||
+      endPointer == NULL ||
+      *endPointer != '\0') {
+    return false;
+  }
+
+  // 读取动作
+  token = strtok(NULL, ",");
+
+  if (token == NULL) {
+    return false;
+  }
+
+  char* action = token;
+
+  // 不允许出现多余字段
+  if (strtok(NULL, ",") != NULL) {
+    return false;
+  }
+
+  // ----------------------------------------------------------
+  // STOP：停车锁定，但不改变当前手动/自动模式
+  // ----------------------------------------------------------
+  if (strcmp(action, "STOP") == 0) {
+    commandStopActive = true;
+    remoteAction = REMOTE_STOP;
+    stopCar();  // 立即把左右电机输出清零
+    requireRemoteNeutralRearm();
+  }
+
+  // ----------------------------------------------------------
+  // MANUAL：进入手动模式
+  //
+  // MANUAL 同时作为软件 ESTOP 的安全解除动作。
+  // 解除后仍要求手柄方向键先回到中位。
+  // ----------------------------------------------------------
+  else if (strcmp(action, "MANUAL") == 0) {
+    softwareEmergencyActive = false;
+    commandStopActive = false;
+
+    manualModeActive = true;
+    remoteAction = REMOTE_STOP;
+
+    requireRemoteNeutralRearm();
+
+  }
+
+  // ----------------------------------------------------------
+  // AUTO：进入自动模式
+  //
+  // 软件 ESTOP 锁定期间不允许直接进入 AUTO；
+  // 必须先发送 MANUAL 完成安全解除。
+  // ----------------------------------------------------------
+  else if (strcmp(action, "AUTO") == 0) {
+    // 软件急停仍然禁止直接进入 AUTO。
+    if (softwareEmergencyActive) {
+      Serial.println(
+          F("CMD AUTO rejected: ESTOP latched; send MANUAL first"));
+      return true;
+    }
+
+    // 必须在修改模式标志之前，记住是否需要重新确认。
+    const bool needsFreshTarget =
+        manualModeActive || commandStopActive;
+
+    commandStopActive = false;
+    manualModeActive = false;
+    remoteAction = REMOTE_STOP;
+
+    // 只有真正切换模式，或从 STOP 恢复时才重置。
+    if (needsFreshTarget) {
+      hasReceivedTarget = false;
+      resetAutoFollowConfirmation();
+      requireRemoteNeutralRearm();
+    }
+  }
+
+  // ----------------------------------------------------------
+  // ESTOP：软件急停锁定
+  // ----------------------------------------------------------
+  else if (strcmp(action, "ESTOP") == 0) {
+    softwareEmergencyActive = true;
+    commandStopActive = true;
+
+    remoteAction = REMOTE_STOP;
+
+    stopCar();  // 立即停车
+
+    requireRemoteNeutralRearm();
+  }
+
+  else {
+    return false;
+  }
+
+#if DEBUG_PRINT
+  Serial.print(F("CMD: seq="));
+  Serial.print(sequence);
+
+  Serial.print(F(", action="));
+  Serial.println(action);
+#endif
+
+  return true;
+}
+
+// OpenBot原有程序可能自动发送这些后台消息。
+// 当前自定义控制只使用TARGET和CMD，因此全部忽略。
+bool isOpenBotBackgroundMessage(const char* line) {
+  const size_t length = strlen(line);
+
+  // f：OpenBot功能查询
+  if (strcmp(line, "f") == 0) {
+    return true;
+  }
+
+  if (length > 1) {
+    const char type = line[0];
+
+    // h750、c0,0、s100、v250、w500等
+    if (type == 'h' ||
+        type == 'c' ||
+        type == 's' ||
+        type == 'v' ||
+        type == 'w') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void handleSerialLine(char* line) {
-  // OpenBot 自主跟随数据
+  // 手机端模式与安全控制
+  if (startsWith(line, "CMD,")) {
+    if (!handleCommandMessage(line)) {
+      Serial.println(F("Invalid CMD message."));
+    }
+
+    return;
+  }
+
+  // 手机端目标跟随数据
   if (startsWith(line, "TARGET,")) {
     TargetData target;
 
@@ -143,36 +314,56 @@ void handleSerialLine(char* line) {
     return;
   }
 
-  // 单字符遥控指令
+  // 忽略OpenBot原有后台协议，禁止其直接控制电机
+  if (isOpenBotBackgroundMessage(line)) {
+    return;
+  }
+
+  // 电脑串口单字符调试
   if (strlen(line) == 1) {
     handleRemoteCharacter(line[0]);
     return;
   }
 
+#if DEBUG_PRINT
   Serial.print(F("Unknown message: "));
   Serial.println(line);
+#endif
 }
 
 void readSerialInput() {
+  // 发生溢出后，持续丢弃字符，直到本行结束。
+  static bool discardUntilNewline = false;
+
   while (Serial.available() > 0) {
     const char c = (char)Serial.read();
 
+    // 换行表示一条消息结束。
     if (c == '\n' || c == '\r') {
-      if (serialIndex > 0) {
+      // 只有未溢出且非空的消息，才能进入解析。
+      if (!discardUntilNewline && serialIndex > 0) {
         serialBuffer[serialIndex] = '\0';
-
         handleSerialLine(serialBuffer);
-
-        serialIndex = 0;
       }
 
-    } else if (serialIndex < sizeof(serialBuffer) - 1) {
-      serialBuffer[serialIndex++] = c;
+      serialIndex = 0;
+      discardUntilNewline = false;
+      continue;
+    }
 
+    // 当前行已经溢出：忽略所有后续普通字符。
+    if (discardUntilNewline) {
+      continue;
+    }
+
+    // 留出一个位置，存放字符串结束符 '\0'。
+    if (serialIndex < sizeof(serialBuffer) - 1) {
+      serialBuffer[serialIndex++] = c;
     } else {
       serialIndex = 0;
+      discardUntilNewline = true;
 
-      Serial.println(F("Serial buffer overflow."));
+      Serial.println(F("Serial buffer overflow: line discarded."));
     }
   }
 }

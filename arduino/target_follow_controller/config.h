@@ -9,20 +9,30 @@
 // ============================================================
 // 1. 功能开关
 // ============================================================
-
-// 0：只测试指令，不真正驱动电机
-// 1：允许电机运行
+// 下地低速联调：允许电机运行。
+// 上传前必须确认车头传感器、停车阈值和物理断电手段均可用。
 #define MOTOR_ENABLED 1
 
-// 当前暂不启用避障传感器
-#define SENSOR_ENABLED 0
+// 总传感器开关
+#define SENSOR_ENABLED 1
+
+// 四个方向必须独立启用。STM32 尚未接入时，只启用车头传感器。
+// 这样可避免初始化未接线的引脚，也可避免 D12 与电机方向引脚冲突。
+#define ULTRA_LEFT_ENABLED  0
+#define ULTRA_FRONT_ENABLED 1
+#define ULTRA_RIGHT_ENABLED 0
+#define ULTRA_REAR_ENABLED  0
+
 #define TOF_ENABLED 0
 
+// 下地联调阶段保留测距日志；稳定后可改为 0，减少串口输出。
+#define ULTRASONIC_TEST_PRINT_ENABLED 1
+
 // 急停：A3 接 NC，COM 接 GND
-#define EMERGENCY_STOP_ENABLED 1
+#define EMERGENCY_STOP_ENABLED 0
 
 // USB 手柄转接板通过 I2C 通信
-#define I2C_REMOTE_ENABLED 1
+#define I2C_REMOTE_ENABLED 0
 
 // 串口调试输出
 #define DEBUG_PRINT 1
@@ -34,8 +44,8 @@
 //
 // 当前左右通道已经按照你的实车结果交换：
 //
-// 左侧履带：PWM=D6，方向=D9/D10
-// 右侧履带：PWM=D5，方向=D7/D8
+// M2 左侧履带：PWM=D6，方向=D12/D13
+// M1 右侧履带：PWM=D5，方向=D7/D8
 //
 const int LEFT_PWM  = 6;
 const int LEFT_IN1  = 12;
@@ -50,7 +60,7 @@ const int RIGHT_IN2 = 8;
 #define RIGHT_TRACK_DIR -1
 
 // 自主跟随转向符号
-#define TURN_SIGN 1
+#define TURN_SIGN -1
 
 
 // ============================================================
@@ -77,14 +87,15 @@ const unsigned long REMOTE_POLL_INTERVAL_MS = 20;
 // 4. 距离传感器引脚
 // ============================================================
 //
-// 当前 SENSOR_ENABLED=0，这些引脚不会被初始化。
-// 后续正式接避障传感器时再根据实际硬件确认。
+// 当前只启用车头：商家扩展板已将 TRIG/ECHO 接到 A4/A5。
+// 其余方向留作 STM32 到货后的接口定义，不会被初始化或读取。
 //
 const int ULTRA_LEFT_TRIG  = 2;
 const int ULTRA_LEFT_ECHO  = 3;
 
-const int ULTRA_FRONT_TRIG = 4;
-const int ULTRA_FRONT_ECHO = 11;
+// 车头超声波接口：商家扩展板固定连接到 A4/A5
+const int ULTRA_FRONT_TRIG = A4;
+const int ULTRA_FRONT_ECHO = A5;
 
 const int ULTRA_RIGHT_TRIG = 12;
 const int ULTRA_RIGHT_ECHO = A0;
@@ -110,18 +121,39 @@ const int ULTRA_REAR_ECHO  = A2;
 //
 const int EMERGENCY_STOP_PIN = A3;
 
-
 // ============================================================
 // 6. 自主跟随参数
 // ============================================================
+
+// 指定跟随者的最低相似度
 const float SIMILARITY_MIN = 0.50f;
 
-// 目标距离小于该值时停止跟随
-const float FOLLOW_STOP_DISTANCE_CM = 100.0f;
+// OpenBot 手机端已先完成连续 3 帧确认；
+// Arduino 再确认 2 条序号不同的有效 TARGET 后才允许开始前进。
+const uint8_t FAR_TARGET_CONFIRM_FRAMES = 2;
 
-// 目标距离达到该值时允许使用最大速度
-const float FOLLOW_FULL_SPEED_DISTANCE_CM = 250.0f;
+/*
+ * 相对距离：
+ * relativeDistance = 注册时肩髋尺度 / 当前肩髋尺度
+ *
+ * < 1：目标比注册位置近
+ * ≈ 1：目标在注册位置附近
+ * > 1：目标比注册位置远
+ * -1 ：当前距离数据无效
+ */
 
+// 相对距离不超过 1.12 时，不再向前运动
+const float FOLLOW_STOP_RELATIVE_DISTANCE = 1.12f;
+
+/*
+ * 停车后，目标必须重新远到 1.16，才开始累计 Arduino 端的
+ * 2 条确认帧。1.12～1.16 是滞回区间，用于避免距离估计在
+ * 停止阈值附近抖动时反复启停。
+ */
+const float FOLLOW_RESTART_RELATIVE_DISTANCE = 1.16f;
+
+// 相对距离达到 1.80 后，允许使用最大跟随速度
+const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
 
 // ============================================================
 // 7. 速度与转向参数
@@ -130,19 +162,75 @@ const float FOLLOW_FULL_SPEED_DISTANCE_CM = 250.0f;
 // 当前仍处于架空调试阶段，最高速度先限制为 90。
 // 后续稳定后可逐步提高，但不要直接恢复到很高速度。
 //
+// 首轮下地保持固定低速，优先验证停车距离和直行稳定性。
+// 实车验证通过后，再分离“最低可启动速度”和“最高跟随速度”。
 const int MIN_SPEED = 70;
-const int MAX_SPEED = 90;
+const int MAX_SPEED = 70;
 
 const float K_TURN = 70.0f;
-const float TARGET_CENTER_X_THRESHOLD = 0.25f;
+const float TARGET_CENTER_X_THRESHOLD = 0.10f;
 
+// ============================================================
+// 近距离原地对准参数
+// ============================================================
+
+// 尚未进入对准时，水平偏差达到 0.15 才开始累计确认帧。
+const float ALIGN_START_X_THRESHOLD = 0.15f;
+
+// 已进入对准后，偏差降到 0.08 才退出，形成启动/停止滞回。
+const float ALIGN_STOP_X_THRESHOLD = 0.08f;
+
+// 必须连续收到两条序号不同、且偏转方向一致的 TARGET 才启动。
+const uint8_t ALIGN_CONFIRM_FRAMES = 2;
+
+// 履带原地转向的 PWM 下限与上限。
+const int MIN_ALIGN_TURN_SPEED = 50;
+const int MAX_ALIGN_TURN_SPEED = 70;
+
+// ============================================================
+// 电机输出平滑
+// ============================================================
+
+// 是否启用电机速度斜坡
+#define MOTOR_RAMP_ENABLED 1
+
+/*
+ * 每个控制周期最多变化的 PWM 数值。
+ *
+ * 当前控制周期为 20 ms：
+ * 0 → 70 约需 14 个周期，即约 280 ms
+ * 0 → 90 约需 18 个周期，即约 360 ms
+ */
+const int MOTOR_RAMP_STEP = 5;
 
 // ============================================================
 // 8. 避障参数
 // ============================================================
-const float ULTRA_FRONT_SAFE_CM = 45.0f;
+// 下地初测保留较大的制动余量：连续两帧不超过 60 cm 即停车。
+const float ULTRA_FRONT_SAFE_CM = 60.0f;
+
+// 停车后必须连续测到至少 75 cm 才能解除，形成 15 cm 滞回区。
+const float ULTRA_FRONT_RELEASE_CM = 75.0f;
+
 const float ULTRA_SIDE_SAFE_CM  = 35.0f;
 const float ULTRA_REAR_SAFE_CM  = 35.0f;
+
+// JSN-SR04T 常见近距离盲区约 20 cm；低于此值仍按“太近”处理，
+// 但串口会标成 BELOW_MIN，提醒该数值本身不宜当作精确距离。
+const float ULTRA_MIN_RELIABLE_CM = 20.0f;
+const float ULTRA_MAX_RELIABLE_CM = 500.0f;
+
+// 单个方向每 80 ms 采样一次。两帧确认后，典型判定延迟约 160 ms。
+const unsigned long ULTRA_SAMPLE_INTERVAL_MS = 80;
+
+// 20 ms 约对应 3.4 m 单程测距，足够覆盖当前室内下地测试范围，
+// 同时减少无回波时 pulseIn 对串口和跟随控制循环的阻塞。
+const unsigned long ULTRA_ECHO_TIMEOUT_US = 20000;
+
+// 停车要求连续 2 帧，兼顾响应速度与毛刺过滤；
+// 解除要求连续 3 帧，避免障碍边缘晃动时过早重新起步。
+const uint8_t ULTRA_BLOCK_CONFIRM_SAMPLES = 2;
+const uint8_t ULTRA_RELEASE_CONFIRM_SAMPLES = 3;
 
 const float TOF_TOO_CLOSE_CM = 80.0f;
 const float TOF_FAR_CM       = 180.0f;
@@ -153,7 +241,7 @@ const float TOF_FAR_CM       = 180.0f;
 // ============================================================
 
 // OpenBot 目标数据超时
-const unsigned long TARGET_TIMEOUT_MS = 500;
+const unsigned long TARGET_TIMEOUT_MS = 1000;
 
 // 电脑串口单字符遥控超时
 const unsigned long REMOTE_TIMEOUT_MS = 1500;
@@ -180,12 +268,15 @@ const unsigned long CONTROL_INTERVAL_MS = 20;
 // 10. 公共数据类型
 // ============================================================
 struct TargetData {
-  unsigned long sequence;      // OpenBot 帧序号
-  bool valid;                  // 目标是否有效
-  float xError;                // 水平偏差，范围 -1～1
-  float distanceCm;            // 目标距离，-1 表示无效
-  float similarity;            // 相似度，范围 0～1
-  unsigned long receivedAt;    // Arduino 收到新数据的时间
+  unsigned long sequence;       // 手机端消息序号
+  bool valid;                   // 目标是否有效
+  float xError;                 // 水平偏差，范围 -1～1
+
+  float relativeDistance;       // 注册尺度 / 当前尺度
+                                // >1 更远，<1 更近，-1 无效
+
+  float similarity;             // 身份相似度，范围 0～1
+  unsigned long receivedAt;     // Arduino 收到数据的时间
 };
 
 struct DistanceData {
@@ -194,6 +285,7 @@ struct DistanceData {
   float ultraRightCm;
   float ultraRearCm;
   float tofFrontCm;
+  unsigned long sampledAt;
 };
 
 struct MotionCommand {
@@ -230,6 +322,12 @@ extern RobotState currentState;
 
 extern bool hasReceivedTarget;
 extern bool manualModeActive;
+
+// CMD,序号,STOP 触发的停车锁定
+extern bool commandStopActive;
+
+// CMD,序号,ESTOP 触发的软件急停锁定
+extern bool softwareEmergencyActive;
 
 extern RemoteAction remoteAction;
 extern int remoteSpeed;
@@ -279,6 +377,8 @@ MotionCommand computeObstacleCommand(
 // ============================================================
 void setupAutoFollow();
 
+void resetAutoFollowConfirmation();
+
 bool parseTargetMessage(
     char* line,
     TargetData& target);
@@ -305,3 +405,4 @@ void applySafeMotionCommand(
 void stopCar();
 
 #endif
+
