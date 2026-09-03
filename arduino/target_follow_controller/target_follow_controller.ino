@@ -7,7 +7,7 @@ TargetData latestTarget = {
   0,        // sequence
   false,    // valid
   0.0f,     // xError
-  -1.0f,    // relativeDistance
+  -1.0f,    // distanceCm
   0.0f,     // similarity
   0         // receivedAt
 };
@@ -16,32 +16,23 @@ RobotState currentState = STATE_IDLE;
 
 bool hasReceivedTarget = false;
 bool manualModeActive = true;
-
-// 手机发送 STOP 后保持停车
-bool commandStopActive = false;
-
-// 手机发送 ESTOP 后保持软件急停
-bool softwareEmergencyActive = false;
-
 RemoteAction remoteAction = REMOTE_STOP;
-
 int remoteSpeed = 70;
 unsigned long lastRemoteCommandTime = 0;
 
 unsigned long lastControlTime = 0;
 
 void setup() {
+  Serial.begin(115200);
+  delay(300);
 
   /*
    * 安全模块必须最先初始化：
    * 先把电机引脚设为输出并强制为 0，
    * 再初始化可能受干扰的 I2C 遥控模块。
-  */
+   */
   setupSafetyRedundancy();
   stopCar();
-
-  Serial.begin(115200);
-  delay(300);
 
   setupRemoteControl();
   setupObstacleSensors();

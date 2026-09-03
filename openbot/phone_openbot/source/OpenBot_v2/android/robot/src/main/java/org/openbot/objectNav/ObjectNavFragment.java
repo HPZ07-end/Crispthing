@@ -1,0 +1,1366 @@
+package org.openbot.objectNav;
+
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.Typeface;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.SystemClock;
+import android.util.TypedValue;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
+import android.widget.LinearLayout;
+import android.widget.Spinner;
+import android.widget.TextView;
+import android.widget.Toast;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.camera.core.CameraSelector;
+import androidx.camera.core.ImageProxy;
+import androidx.navigation.Navigation;
+import com.google.android.material.bottomsheet.BottomSheetBehavior;
+import java.io.IOException;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Locale;
+import org.jetbrains.annotations.NotNull;
+import org.openbot.R;
+import org.openbot.common.CameraFragment;
+import org.openbot.databinding.FragmentObjectNavBinding;
+import org.openbot.env.BorderedText;
+import org.openbot.env.ImageUtils;
+import org.openbot.tflite.Detector;
+import org.openbot.tflite.Model;
+import org.openbot.tflite.Network;
+import org.openbot.tracking.MultiBoxTracker;
+import org.openbot.utils.CameraUtils;
+import org.openbot.markerfollow.UdpTargetSender;
+import org.openbot.utils.Constants;
+import org.openbot.utils.Enums;
+import org.openbot.utils.MovingAverage;
+import org.openbot.utils.PermissionUtils;
+import org.openbot.vehicle.Control;
+import timber.log.Timber;
+import android.content.Intent;
+import android.provider.MediaStore;
+import android.widget.Button;
+import android.widget.EditText;
+import android.app.AlertDialog;
+import android.view.Gravity;
+import android.widget.FrameLayout;
+import android.app.SearchManager;
+import android.app.Activity;
+import android.speech.RecognizerIntent;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import java.util.ArrayList;
+
+public class ObjectNavFragment extends CameraFragment {
+  private FragmentObjectNavBinding binding;
+  private Handler handler;
+  private HandlerThread handlerThread;
+
+  private boolean computingNetwork = false;
+  public static float MINIMUM_CONFIDENCE_TF_OD_API = 0.5f;
+
+  private static final float TEXT_SIZE_DIP = 10;
+
+  private Detector detector;
+
+  private boolean mirrorControl;
+  private Matrix frameToCropTransform;
+  private Bitmap croppedBitmap;
+  private int sensorOrientation;
+  private Bitmap cropCopyBitmap;
+  private Matrix cropToFrameTransform;
+
+  private MultiBoxTracker tracker;
+
+  private Model model;
+  private Network.Device device = Network.Device.CPU;
+  private int numThreads = -1;
+  private String classType = "person";
+  private UdpTargetSender udpSender;
+  private enum MarkerColor {
+    PURPLE,
+    BLUE
+  }
+
+  private MarkerColor selectedMarkerColor = MarkerColor.PURPLE;
+  private Spinner markerColorSpinner;
+  private Button agentButton;
+  private ActivityResultLauncher<Intent> speechLauncher;
+  // 电脑 WLAN 的 IPv4 地址
+  private static final String PC_IP = "183.173.177.106";
+  private static final int PC_PORT = 4210;
+  // 目标记忆：用于处理弯腰、遮挡、短暂丢失紫色标记
+  private static final long PURPLE_LOST_GRACE_MS = 800;
+  private static final long TARGET_LOST_TIMEOUT_MS = 1500;
+  private static final float REACQUIRE_MAX_X_DIFF = 0.35f;
+
+  private float lastTargetX = 0f;
+  private float lastTargetSize = 0f;
+  private float lastTargetConfidence = 0f;
+  private long lastStrongTargetTime = 0;
+  // 紫色 HSV 参数
+  private static final float PURPLE_H_MIN = 250f;
+  private static final float PURPLE_H_MAX = 320f;
+  private static final float PURPLE_S_MIN = 0.25f;
+  private static final float PURPLE_V_MIN = 0.20f;
+
+  // 蓝色 / 青蓝色 HSV 参数
+  private static final float BLUE_H_MIN = 185f;
+  private static final float BLUE_H_MAX = 240f;
+  private static final float BLUE_S_MIN = 0.30f;
+  private static final float BLUE_V_MIN = 0.25f;
+
+  // 在人框里面采样紫色点
+  private static final int PURPLE_SAMPLE_STEP = 8;
+
+  // 人框里面紫色太少，就认为这个人不是目标
+  private static final int MIN_PURPLE_SAMPLES_IN_PERSON = 8;
+  private static final float MIN_PURPLE_RATIO_IN_PERSON = 0.002f;
+  private long lastProcessingTimeMs = -1;
+  private long frameNum = 0;
+
+  private final boolean isBenchmarkMode = false;
+  private long processedFrames = 0;
+  private final int movingAvgSize = 100;
+  private MovingAverage movingAvgProcessingTimeMs = new MovingAverage(movingAvgSize);
+
+  @Override
+  public void onCreate(@Nullable Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+
+    speechLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.StartActivityForResult(),
+                    result -> {
+                      if (result.getResultCode() == Activity.RESULT_OK && result.getData() != null) {
+                        ArrayList<String> matches =
+                                result.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+
+                        if (matches != null && !matches.isEmpty()) {
+                          String command = matches.get(0);
+                          Toast.makeText(requireContext(), "识别到：" + command, Toast.LENGTH_SHORT).show();
+                          handleAgentCommand(command);
+                        }
+                      }
+                    });
+  }
+
+  @Override
+  public View onCreateView(
+      @NotNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
+    // Inflate the layout for this fragment
+    binding = FragmentObjectNavBinding.inflate(inflater, container, false);
+
+    return inflateFragment(binding, inflater, container);
+  }
+
+  @Override
+  public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
+    super.onViewCreated(view, savedInstanceState);
+    udpSender = new UdpTargetSender(PC_IP, PC_PORT);
+    setupMarkerColorSelector();
+    setupAgentCommandPanel();
+    binding.confidenceValue.setText((int) (MINIMUM_CONFIDENCE_TF_OD_API * 100) + "%");
+
+    binding.plusConfidence.setOnClickListener(
+        v -> {
+          String trimConfValue = binding.confidenceValue.getText().toString().trim();
+          int confValue = Integer.parseInt(trimConfValue.substring(0, trimConfValue.length() - 1));
+          if (confValue >= 95) return;
+          confValue += 5;
+          binding.confidenceValue.setText(confValue + "%");
+          MINIMUM_CONFIDENCE_TF_OD_API = confValue / 100f;
+        });
+    binding.minusConfidence.setOnClickListener(
+        v -> {
+          String trimConfValue = binding.confidenceValue.getText().toString().trim();
+          int confValue = Integer.parseInt(trimConfValue.substring(0, trimConfValue.length() - 1));
+          if (confValue <= 5) return;
+          confValue -= 5;
+          binding.confidenceValue.setText(confValue + "%");
+          MINIMUM_CONFIDENCE_TF_OD_API = confValue / 100f;
+        });
+
+    binding.controllerContainer.speedInfo.setText(getString(R.string.speedInfo, "---,---"));
+
+    if (vehicle.getConnectionType().equals("USB")) {
+      binding.usbToggle.setVisibility(View.VISIBLE);
+      binding.bleToggle.setVisibility(View.GONE);
+    } else if (vehicle.getConnectionType().equals("Bluetooth")) {
+      binding.bleToggle.setVisibility(View.VISIBLE);
+      binding.usbToggle.setVisibility(View.GONE);
+    }
+
+    classType = preferencesManager.getObjectType();
+    binding.classType.setOnItemSelectedListener(
+        new AdapterView.OnItemSelectedListener() {
+          @Override
+          public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            classType = parent.getItemAtPosition(position).toString();
+            preferencesManager.setObjectType(classType);
+          }
+
+          @Override
+          public void onNothingSelected(AdapterView<?> parent) {}
+        });
+    binding.deviceSpinner.setSelection(preferencesManager.getDevice());
+    setNumThreads(preferencesManager.getNumThreads());
+    binding.threads.setText(String.valueOf(getNumThreads()));
+
+    binding.cameraToggle.setOnClickListener(v -> toggleCamera());
+
+    binding.mirrorControl.setOnClickListener(v -> mirrorControl());
+
+    List<String> models =
+        getModelNames(f -> f.type.equals(Model.TYPE.DETECTOR) && f.pathType != Model.PATH_TYPE.URL);
+    initModelSpinner(binding.modelSpinner, models, preferencesManager.getObjectNavModel());
+
+    setAnalyserResolution(Enums.Preview.HD.getValue());
+    binding.deviceSpinner.setOnItemSelectedListener(
+        new AdapterView.OnItemSelectedListener() {
+          @Override
+          public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            String selected = parent.getItemAtPosition(position).toString();
+            setDevice(Network.Device.valueOf(selected.toUpperCase()));
+          }
+
+          @Override
+          public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
+    binding.plus.setOnClickListener(
+        v -> {
+          String threads = binding.threads.getText().toString().trim();
+          int numThreads = Integer.parseInt(threads);
+          if (numThreads >= 9) return;
+          setNumThreads(++numThreads);
+          binding.threads.setText(String.valueOf(numThreads));
+        });
+    binding.minus.setOnClickListener(
+        v -> {
+          String threads = binding.threads.getText().toString().trim();
+          int numThreads = Integer.parseInt(threads);
+          if (numThreads == 1) return;
+          setNumThreads(--numThreads);
+          binding.threads.setText(String.valueOf(numThreads));
+        });
+    BottomSheetBehavior.from(binding.aiBottomSheet).setState(BottomSheetBehavior.STATE_EXPANDED);
+
+    mViewModel
+        .getUsbStatus()
+        .observe(getViewLifecycleOwner(), status -> binding.usbToggle.setChecked(status));
+
+    binding.usbToggle.setChecked(vehicle.isUsbConnected());
+    binding.bleToggle.setChecked(vehicle.bleConnected());
+
+    binding.usbToggle.setOnClickListener(
+        v -> {
+          binding.usbToggle.setChecked(vehicle.isUsbConnected());
+          Navigation.findNavController(requireView()).navigate(R.id.open_usb_fragment);
+        });
+    binding.bleToggle.setOnClickListener(
+        v -> {
+          binding.bleToggle.setChecked(vehicle.bleConnected());
+          Navigation.findNavController(requireView()).navigate(R.id.open_bluetooth_fragment);
+        });
+    binding.bleToggle.setOnClickListener(
+        v -> {
+          binding.bleToggle.setChecked(vehicle.bleConnected());
+          Navigation.findNavController(requireView()).navigate(R.id.open_bluetooth_fragment);
+        });
+
+    setSpeedMode(Enums.SpeedMode.getByID(preferencesManager.getSpeedMode()));
+    setControlMode(Enums.ControlMode.getByID(preferencesManager.getControlMode()));
+    setDriveMode(Enums.DriveMode.getByID(preferencesManager.getDriveMode()));
+
+    binding.controllerContainer.controlMode.setOnClickListener(
+        v -> {
+          Enums.ControlMode controlMode =
+              Enums.ControlMode.getByID(preferencesManager.getControlMode());
+          if (controlMode != null) setControlMode(Enums.switchControlMode(controlMode));
+        });
+    binding.controllerContainer.driveMode.setOnClickListener(
+        v -> setDriveMode(Enums.switchDriveMode(vehicle.getDriveMode())));
+
+    binding.controllerContainer.speedMode.setOnClickListener(
+        v ->
+            setSpeedMode(
+                Enums.toggleSpeed(
+                    Enums.Direction.CYCLIC.getValue(),
+                    Enums.SpeedMode.getByID(preferencesManager.getSpeedMode()))));
+
+    binding.autoSwitch.setOnClickListener(v -> setNetworkEnabled(binding.autoSwitch.isChecked()));
+    binding.dynamicSpeed.setChecked(preferencesManager.getDynamicSpeed());
+    binding.dynamicSpeed.setOnClickListener(
+        v -> {
+          preferencesManager.setDynamicSpeed(binding.dynamicSpeed.isChecked());
+          tracker.setDynamicSpeed(preferencesManager.getDynamicSpeed());
+        });
+  }
+
+  private void setupMarkerColorSelector() {
+    if (!(binding.aiBottomSheet instanceof ViewGroup)) {
+      return;
+    }
+
+    LinearLayout row = new LinearLayout(requireContext());
+    row.setOrientation(LinearLayout.HORIZONTAL);
+    row.setPadding(24, 16, 24, 16);
+
+    TextView label = new TextView(requireContext());
+    label.setText("Target Color: ");
+    label.setTextSize(16f);
+    label.setTextColor(Color.BLACK);
+
+    markerColorSpinner = new Spinner(requireContext());
+
+    String[] colors = new String[] {"Purple", "Blue"};
+
+    ArrayAdapter<String> adapter =
+            new ArrayAdapter<>(
+                    requireContext(),
+                    android.R.layout.simple_spinner_item,
+                    colors);
+
+    adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+    markerColorSpinner.setAdapter(adapter);
+
+    markerColorSpinner.setSelection(
+            selectedMarkerColor == MarkerColor.BLUE ? 1 : 0);
+
+    markerColorSpinner.setOnItemSelectedListener(
+            new AdapterView.OnItemSelectedListener() {
+              @Override
+              public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (position == 0) {
+                  selectedMarkerColor = MarkerColor.PURPLE;
+                } else {
+                  selectedMarkerColor = MarkerColor.BLUE;
+                }
+
+                resetTargetMemory();
+
+                Toast.makeText(
+                                requireContext(),
+                                "Target color: " + colors[position],
+                                Toast.LENGTH_SHORT)
+                        .show();
+              }
+
+              @Override
+              public void onNothingSelected(AdapterView<?> parent) {}
+            });
+
+    row.addView(
+            label,
+            new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+
+    row.addView(
+            markerColorSpinner,
+            new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+
+    ((ViewGroup) binding.aiBottomSheet).addView(row);
+  }
+
+  private void setupAgentCommandPanel() {
+    ViewGroup root = requireActivity().findViewById(android.R.id.content);
+
+    agentButton = new Button(requireContext());
+    agentButton.setText("Agent");
+    agentButton.setTextSize(12f);
+    agentButton.setAlpha(0.85f);
+
+    FrameLayout.LayoutParams params =
+            new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT);
+
+    params.gravity = Gravity.TOP | Gravity.END;
+    params.setMargins(0, 80, 24, 0);
+
+    root.addView(agentButton, params);
+
+    agentButton.setOnClickListener(v -> showAgentCommandDialog());
+  }
+
+  private void showAgentCommandDialog() {
+    LinearLayout container = new LinearLayout(requireContext());
+    container.setOrientation(LinearLayout.VERTICAL);
+    container.setPadding(48, 24, 48, 8);
+
+    TextView hint = new TextView(requireContext());
+    hint.setText("可输入：purple / blue / stop / auto / status / music");
+    hint.setTextSize(14f);
+    hint.setTextColor(Color.DKGRAY);
+
+    EditText commandInput = new EditText(requireContext());
+    commandInput.setHint("输入 Agent 指令");
+    commandInput.setSingleLine(true);
+
+    container.addView(
+            hint,
+            new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+
+    container.addView(
+            commandInput,
+            new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+
+    AlertDialog dialog =
+            new AlertDialog.Builder(requireContext())
+                    .setTitle("Agent Command")
+                    .setView(container)
+                    .setPositiveButton(
+                            "Run",
+                            (d, which) -> {
+                              String command = commandInput.getText().toString().trim();
+                              handleAgentCommand(command);
+                            })
+                    .setNeutralButton("Voice", null)
+                    .setNegativeButton("Cancel", null)
+                    .create();
+
+    dialog.setOnShowListener(
+            d -> {
+              commandInput.requestFocus();
+
+              Button voiceButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+              if (voiceButton != null) {
+                voiceButton.setOnClickListener(v -> startVoiceInput());
+              }
+            });
+
+    dialog.show();
+
+    dialog.setOnShowListener(
+            d -> {
+              commandInput.requestFocus();
+
+              Button voiceButton = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+              if (voiceButton != null) {
+                voiceButton.setOnClickListener(v -> startVoiceInput());
+              }
+            });
+
+    dialog.show();
+
+    dialog.setOnShowListener(
+            d -> {
+              commandInput.requestFocus();
+            });
+
+    dialog.show();
+  }
+
+  private void startVoiceInput() {
+    if (speechLauncher == null) {
+      Toast.makeText(requireContext(), "语音识别未初始化", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+    intent.putExtra(
+            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-CN");
+    intent.putExtra(
+            RecognizerIntent.EXTRA_PROMPT,
+            "请说指令：开始跟随 / 停车 / 切换紫色目标 / 切换蓝色目标 / 播放音乐");
+
+    try {
+      speechLauncher.launch(intent);
+    } catch (Exception e) {
+      Toast.makeText(requireContext(), "当前手机不支持语音识别", Toast.LENGTH_SHORT).show();
+    }
+  }
+  private void handleAgentCommand(String command) {
+    if (command == null || command.isEmpty()) {
+      Toast.makeText(requireContext(), "请输入命令", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    String cmd = command.toLowerCase(Locale.US);
+
+    if (cmd.contains("purple") || cmd.contains("紫")) {
+      selectedMarkerColor = MarkerColor.PURPLE;
+      resetTargetMemory();
+
+      if (markerColorSpinner != null) {
+        markerColorSpinner.setSelection(0);
+      }
+
+      Toast.makeText(requireContext(), "已切换为紫色目标", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    if (cmd.contains("blue") || cmd.contains("蓝")) {
+      selectedMarkerColor = MarkerColor.BLUE;
+      resetTargetMemory();
+
+      if (markerColorSpinner != null) {
+        markerColorSpinner.setSelection(1);
+      }
+
+      Toast.makeText(requireContext(), "已切换为蓝色目标", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    if (cmd.contains("stop") || cmd.contains("停车") || cmd.contains("停止")) {
+      sendCommandToController("CMD,STOP");
+      Toast.makeText(requireContext(), "已发送停车指令", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    if (cmd.contains("auto") || cmd.contains("follow") || cmd.contains("开始跟随")) {
+      sendCommandToController("CMD,AUTO");
+      Toast.makeText(requireContext(), "已发送开始跟随指令", Toast.LENGTH_SHORT).show();
+      return;
+    }
+
+    if (cmd.contains("status") || cmd.contains("状态")) {
+      String colorName = selectedMarkerColor == MarkerColor.BLUE ? "蓝色" : "紫色";
+      Toast.makeText(
+                      requireContext(),
+                      "当前目标颜色：" + colorName,
+                      Toast.LENGTH_LONG)
+              .show();
+      return;
+    }
+
+    if (cmd.contains("music") || cmd.contains("音乐") || cmd.contains("歌")) {
+      openMusicApp();
+      return;
+    }
+
+    Toast.makeText(requireContext(), "未识别命令：" + command, Toast.LENGTH_SHORT).show();
+  }
+  private void sendCommandToController(String command) {
+    if (udpSender != null) {
+      udpSender.send(command);
+    }
+  }
+
+  private void openMusicApp() {
+    try {
+      Intent intent = new Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH);
+      intent.putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/audio");
+      intent.putExtra(SearchManager.QUERY, "");
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      startActivity(intent);
+    } catch (Exception e) {
+      try {
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_APP_MUSIC);
+        startActivity(intent);
+      } catch (Exception ex) {
+        Toast.makeText(requireContext(), "没有找到可用的音乐应用", Toast.LENGTH_SHORT).show();
+      }
+    }
+  }
+  private void resetTargetMemory() {
+    lastTargetX = 0f;
+    lastTargetSize = 0f;
+    lastTargetConfidence = 0f;
+    lastStrongTargetTime = 0;
+  }
+  private void mirrorControl() {
+    mirrorControl = !mirrorControl;
+  }
+
+  private void updateCropImageInfo() {
+    //    Timber.i("%s x %s",getPreviewSize().getWidth(), getPreviewSize().getHeight());
+    //    Timber.i("%s x %s",getMaxAnalyseImageSize().getWidth(),
+    //     getMaxAnalyseImageSize().getHeight());
+    frameToCropTransform = null;
+
+    sensorOrientation = 90 - ImageUtils.getScreenOrientation(requireActivity());
+
+    final float textSizePx =
+        TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, TEXT_SIZE_DIP, getResources().getDisplayMetrics());
+    BorderedText borderedText = new BorderedText(textSizePx);
+    borderedText.setTypeface(Typeface.MONOSPACE);
+
+    tracker = new MultiBoxTracker(requireContext());
+    tracker.setDynamicSpeed(preferencesManager.getDynamicSpeed());
+
+    Timber.i("Camera orientation relative to screen canvas: %d", sensorOrientation);
+
+    recreateNetwork(getModel(), getDevice(), getNumThreads());
+    if (detector == null) {
+      Timber.e("No network on preview!");
+      return;
+    }
+
+    binding.trackingOverlay.addCallback(
+        canvas -> {
+          if (tracker != null) {
+            tracker.draw(canvas);
+          }
+          //tracker.drawDebug(canvas);
+        });
+    tracker.setFrameConfiguration(
+        getMaxAnalyseImageSize().getWidth(),
+        getMaxAnalyseImageSize().getHeight(),
+        sensorOrientation);
+  }
+
+  protected void onInferenceConfigurationChanged() {
+    computingNetwork = false;
+    if (croppedBitmap == null) {
+      // Defer creation until we're getting camera frames.
+      return;
+    }
+    final Network.Device device = getDevice();
+    final Model model = getModel();
+    final int numThreads = getNumThreads();
+    runInBackground(() -> recreateNetwork(model, device, numThreads));
+  }
+
+  private void recreateNetwork(Model model, Network.Device device, int numThreads) {
+    resetFpsUi();
+    if (model == null) return;
+    tracker.clearTrackedObjects();
+    if (detector != null) {
+      Timber.d("Closing detector.");
+      detector.close();
+      detector = null;
+    }
+
+    try {
+      Timber.d("Creating detector (model=%s, device=%s, numThreads=%d)", model, device, numThreads);
+      detector = Detector.create(requireActivity(), model, device, numThreads);
+
+      assert detector != null;
+      croppedBitmap =
+          Bitmap.createBitmap(
+              detector.getImageSizeX(), detector.getImageSizeY(), Bitmap.Config.ARGB_8888);
+      frameToCropTransform =
+          ImageUtils.getTransformationMatrix(
+              getMaxAnalyseImageSize().getWidth(),
+              getMaxAnalyseImageSize().getHeight(),
+              croppedBitmap.getWidth(),
+              croppedBitmap.getHeight(),
+              sensorOrientation,
+              detector.getCropRect(),
+              detector.getMaintainAspect());
+
+      cropToFrameTransform = new Matrix();
+      frameToCropTransform.invert(cropToFrameTransform);
+
+      requireActivity()
+          .runOnUiThread(
+              () -> {
+                ArrayAdapter<String> adapter =
+                    new ArrayAdapter<>(
+                        getContext(),
+                        android.R.layout.simple_dropdown_item_1line,
+                        detector.getLabels());
+                binding.classType.setAdapter(adapter);
+                binding.classType.setSelection(
+                    detector.getLabels().indexOf(preferencesManager.getObjectType()));
+                binding.inputResolution.setText(
+                    String.format(
+                        Locale.getDefault(),
+                        "%dx%d",
+                        detector.getImageSizeX(),
+                        detector.getImageSizeY()));
+              });
+
+    } catch (IllegalArgumentException | IOException e) {
+      String msg = "Failed to create network.";
+      Timber.e(e, msg);
+      requireActivity()
+          .runOnUiThread(
+              () ->
+                  Toast.makeText(
+                          requireContext().getApplicationContext(),
+                          e.getMessage(),
+                          Toast.LENGTH_LONG)
+                      .show());
+    }
+  }
+
+  @Override
+  public synchronized void onResume() {
+    croppedBitmap = null;
+    tracker = null;
+    handlerThread = new HandlerThread("inference");
+    handlerThread.start();
+    handler = new Handler(handlerThread.getLooper());
+    binding.bleToggle.setChecked(vehicle.bleConnected());
+    super.onResume();
+  }
+
+  @Override
+  public synchronized void onPause() {
+    handlerThread.quitSafely();
+    try {
+      handlerThread.join();
+      handlerThread = null;
+      handler = null;
+    } catch (final InterruptedException e) {
+      e.printStackTrace();
+    }
+    super.onPause();
+  }
+
+  @Override
+  public void onDestroyView() {
+    if (agentButton != null) {
+      ViewGroup parent = (ViewGroup) agentButton.getParent();
+      if (parent != null) {
+        parent.removeView(agentButton);
+      }
+      agentButton = null;
+    }
+
+    super.onDestroyView();
+
+    if (udpSender != null) {
+      udpSender.close();
+      udpSender = null;
+    }
+  }
+  protected synchronized void runInBackground(final Runnable r) {
+    if (handler != null) {
+      handler.post(r);
+    }
+  }
+
+  @Override
+  protected void processUSBData(String data) {
+    binding.controllerContainer.speedInfo.setText(
+        getString(
+            R.string.speedInfo,
+            String.format(
+                Locale.US, "%3.0f,%3.0f", vehicle.getLeftWheelRpm(), vehicle.getRightWheelRpm())));
+  }
+
+  @Override
+  protected void processControllerKeyData(String commandType) {
+    switch (commandType) {
+      case Constants.CMD_DRIVE:
+        binding.controllerContainer.controlInfo.setText(
+            String.format(Locale.US, "%.0f,%.0f", vehicle.getLeftSpeed(), vehicle.getRightSpeed()));
+        break;
+
+      case Constants.CMD_NETWORK:
+        setNetworkEnabledWithAudio(!binding.autoSwitch.isChecked());
+        break;
+    }
+  }
+
+  private void setNetworkEnabledWithAudio(boolean b) {
+    setNetworkEnabled(b);
+
+    if (b) audioPlayer.play(voice, "network_enabled.mp3");
+    else audioPlayer.playDriveMode(voice, vehicle.getDriveMode());
+  }
+
+  private void setNetworkEnabled(boolean b) {
+    binding.autoSwitch.setChecked(b);
+
+    binding.controllerContainer.controlMode.setEnabled(!b);
+    binding.controllerContainer.driveMode.setEnabled(!b);
+    binding.controllerContainer.speedMode.setEnabled(!b);
+
+    binding.controllerContainer.controlMode.setAlpha(b ? 0.5f : 1f);
+    binding.controllerContainer.driveMode.setAlpha(b ? 0.5f : 1f);
+    binding.controllerContainer.speedMode.setAlpha(b ? 0.5f : 1f);
+
+    resetFpsUi();
+    if (!b) handler.postDelayed(() -> vehicle.setControl(0, 0), Math.max(lastProcessingTimeMs, 50));
+  }
+
+  @Override
+  protected void processFrame(Bitmap bitmap, ImageProxy image) {
+    if (tracker == null) updateCropImageInfo();
+
+    ++frameNum;
+    if (binding != null && binding.autoSwitch.isChecked()) {
+      // If network is busy, return.
+      if (computingNetwork) {
+        return;
+      }
+
+      computingNetwork = true;
+      Timber.i("Putting image " + frameNum + " for detection in bg thread.");
+
+      runInBackground(
+          () -> {
+            final Canvas canvas = new Canvas(croppedBitmap);
+            if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
+              canvas.drawBitmap(
+                  CameraUtils.flipBitmapHorizontal(bitmap), frameToCropTransform, null);
+            } else {
+              canvas.drawBitmap(bitmap, frameToCropTransform, null);
+            }
+
+            if (detector != null) {
+              Timber.i("Running detection on image %s", frameNum);
+              final long startTime = SystemClock.elapsedRealtime();
+              final List<Detector.Recognition> results =
+                  detector.recognizeImage(croppedBitmap, classType);
+              lastProcessingTimeMs = SystemClock.elapsedRealtime() - startTime;
+
+              if (!results.isEmpty())
+                Timber.i(
+                    "Object: "
+                        + results.get(0).getLocation().centerX()
+                        + ", "
+                        + results.get(0).getLocation().centerY()
+                        + ", "
+                        + results.get(0).getLocation().height()
+                        + ", "
+                        + results.get(0).getLocation().width());
+
+              cropCopyBitmap = Bitmap.createBitmap(croppedBitmap);
+              final Canvas canvas1 = new Canvas(cropCopyBitmap);
+              final Paint paint = new Paint();
+              paint.setColor(Color.RED);
+              paint.setStyle(Paint.Style.STROKE);
+              paint.setStrokeWidth(2.0f);
+
+              final List<Detector.Recognition> mappedRecognitions = new LinkedList<>();
+
+              for (final Detector.Recognition result : results) {
+                final RectF location = result.getLocation();
+                if (location != null && result.getConfidence() >= MINIMUM_CONFIDENCE_TF_OD_API) {
+                  canvas1.drawRect(location, paint);
+                  cropToFrameTransform.mapRect(location);
+                  result.setLocation(location);
+                  mappedRecognitions.add(result);
+                }
+              }
+//              sendPersonBoxes(
+//                      mappedRecognitions,
+//                      getMaxAnalyseImageSize().getWidth(),
+//                      getMaxAnalyseImageSize().getHeight());
+
+          // 新增：判断哪个人框里有紫色，并发送 TARGET
+              sendPurplePersonTarget(
+                      mappedRecognitions,
+                      bitmap,
+                      getMaxAnalyseImageSize().getWidth(),
+                      getMaxAnalyseImageSize().getHeight());
+
+              tracker.trackResults(mappedRecognitions, frameNum);
+              Control target = tracker.updateTarget();
+              if (mirrorControl) {
+                handleDriveCommand(target.mirror());
+              } else {
+                handleDriveCommand(target);
+              }
+              binding.trackingOverlay.postInvalidate();
+            }
+
+            computingNetwork = false;
+          });
+      if (lastProcessingTimeMs > 0) {
+        if (isBenchmarkMode) {
+          double avgProcessingTimeMs = movingAvgProcessingTimeMs.next(lastProcessingTimeMs);
+          processedFrames += 1;
+          if (processedFrames >= movingAvgSize) updateFpsUi(avgProcessingTimeMs);
+        } else updateFpsUi(lastProcessingTimeMs);
+      }
+    }
+  }
+
+  private void sendPersonBoxes(
+          List<Detector.Recognition> recognitions, int imageWidth, int imageHeight) {
+
+    if (udpSender == null || recognitions == null) {
+      return;
+    }
+
+    StringBuilder message = new StringBuilder();
+    message.append("PERSONS");
+
+    int count = 0;
+
+    for (Detector.Recognition recognition : recognitions) {
+      if (recognition == null || recognition.getLocation() == null) {
+        continue;
+      }
+
+      RectF location = recognition.getLocation();
+
+      float centerX = (location.left + location.right) / 2.0f;
+      float boxWidth = location.right - location.left;
+      float boxHeight = location.bottom - location.top;
+
+      if (boxWidth <= 0 || boxHeight <= 0) {
+        continue;
+      }
+
+      float normalizedX = (centerX - imageWidth / 2.0f) / (imageWidth / 2.0f);
+      float areaRatio = (boxWidth * boxHeight) / (imageWidth * imageHeight);
+      float confidence = recognition.getConfidence();
+
+      message.append(
+              String.format(
+                      Locale.US,
+                      ",%d,%.2f,%.4f,%.2f",
+                      count + 1,
+                      normalizedX,
+                      areaRatio,
+                      confidence));
+
+      count++;
+    }
+
+    if (count == 0) {
+      udpSender.send("PERSONS,0");
+    } else {
+      udpSender.send(message.toString());
+    }
+  }
+
+  private void sendPurplePersonTarget(
+          List<Detector.Recognition> persons,
+          Bitmap frameBitmap,
+          int imageWidth,
+          int imageHeight) {
+
+    if (udpSender == null || persons == null || frameBitmap == null) {
+      return;
+    }
+
+    long now = SystemClock.elapsedRealtime();
+
+    TargetCandidate bestTarget = null;
+
+    // 1. 正常情况：找“人框里有紫色”的人
+    for (Detector.Recognition person : persons) {
+      if (person == null || person.getLocation() == null) {
+        continue;
+      }
+
+      RectF personBox = person.getLocation();
+
+      PurpleCheckResult purple = checkPurpleInsideBox(frameBitmap, personBox);
+
+      if (!purple.hasPurple) {
+        continue;
+      }
+
+      TargetCandidate candidate =
+              buildCandidateFromPerson(person, imageWidth, imageHeight);
+
+      if (candidate == null) {
+        continue;
+      }
+
+      candidate.purpleRatio = purple.purpleRatio;
+      candidate.purpleSamples = purple.purpleSamples;
+
+      // 分数：紫色越多、识别越可信，越可能是目标人
+      candidate.score = purple.purpleRatio * person.getConfidence();
+
+      if (bestTarget == null || candidate.score > bestTarget.score) {
+        bestTarget = candidate;
+      }
+    }
+
+    // 2. 如果明确找到了带紫色的人：更新记忆，并发送 quality=1.00
+    if (bestTarget != null) {
+      lastTargetX = bestTarget.x;
+      lastTargetSize = bestTarget.size;
+      lastTargetConfidence = bestTarget.confidence;
+      lastStrongTargetTime = now;
+
+      String message =
+              String.format(
+                      Locale.US,
+                      "TARGET,1,%.2f,%.4f,1.00",
+                      bestTarget.x,
+                      bestTarget.size);
+
+      udpSender.send(message);
+      return;
+    }
+
+    // 3. 如果紫色短暂消失，但刚刚看见过目标：
+    //    尝试在人框里面找离上一帧目标最近的人，继续短暂跟随
+    long lostDuration = now - lastStrongTargetTime;
+
+    if (lastStrongTargetTime > 0 && lostDuration <= PURPLE_LOST_GRACE_MS) {
+      TargetCandidate nearestPerson =
+              findNearestPersonToLastTarget(persons, imageWidth, imageHeight);
+
+      if (nearestPerson != null) {
+        lastTargetX = nearestPerson.x;
+        lastTargetSize = nearestPerson.size;
+        lastTargetConfidence = nearestPerson.confidence;
+
+        String message =
+                String.format(
+                        Locale.US,
+                        "TARGET,1,%.2f,%.4f,0.60",
+                        nearestPerson.x,
+                        nearestPerson.size);
+
+        udpSender.send(message);
+        return;
+      }
+
+      // 如果连人框都短暂没了，就先用上一帧位置保持一下
+      String message =
+              String.format(
+                      Locale.US,
+                      "TARGET,1,%.2f,%.4f,0.40",
+                      lastTargetX,
+                      lastTargetSize);
+
+      udpSender.send(message);
+      return;
+    }
+
+    // 4. 丢失时间稍长，但还没完全超时：发低质量目标，让 Arduino 慢速/停止等待
+    if (lastStrongTargetTime > 0 && lostDuration <= TARGET_LOST_TIMEOUT_MS) {
+      String message =
+              String.format(
+                      Locale.US,
+                      "TARGET,1,%.2f,%.4f,0.25",
+                      lastTargetX,
+                      lastTargetSize);
+
+      udpSender.send(message);
+      return;
+    }
+
+    // 5. 丢失太久：真正认为目标丢失
+    udpSender.send("TARGET,0,0,0,0");
+  }
+
+  private TargetCandidate buildCandidateFromPerson(
+          Detector.Recognition person, int imageWidth, int imageHeight) {
+
+    if (person == null || person.getLocation() == null) {
+      return null;
+    }
+
+    RectF personBox = person.getLocation();
+
+    float boxWidth = personBox.right - personBox.left;
+    float boxHeight = personBox.bottom - personBox.top;
+
+    if (boxWidth <= 0 || boxHeight <= 0) {
+      return null;
+    }
+
+    float centerX = (personBox.left + personBox.right) / 2.0f;
+    float normalizedX = (centerX - imageWidth / 2.0f) / (imageWidth / 2.0f);
+    float areaRatio = (boxWidth * boxHeight) / (imageWidth * imageHeight);
+
+    TargetCandidate candidate = new TargetCandidate();
+    candidate.x = normalizedX;
+    candidate.size = areaRatio;
+    candidate.confidence = person.getConfidence();
+
+    return candidate;
+  }
+
+  private TargetCandidate findNearestPersonToLastTarget(
+          List<Detector.Recognition> persons, int imageWidth, int imageHeight) {
+
+    if (persons == null || persons.isEmpty()) {
+      return null;
+    }
+
+    TargetCandidate best = null;
+    float bestDiff = 999f;
+
+    for (Detector.Recognition person : persons) {
+      TargetCandidate candidate =
+              buildCandidateFromPerson(person, imageWidth, imageHeight);
+
+      if (candidate == null) {
+        continue;
+      }
+
+      float diff = Math.abs(candidate.x - lastTargetX);
+
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = candidate;
+      }
+    }
+
+    if (best != null && bestDiff <= REACQUIRE_MAX_X_DIFF) {
+      return best;
+    }
+
+    return null;
+  }
+  private PurpleCheckResult checkPurpleInsideBox(Bitmap bitmap, RectF box) {
+    int width = bitmap.getWidth();
+    int height = bitmap.getHeight();
+
+    int left = Math.max(0, (int) box.left);
+    int right = Math.min(width - 1, (int) box.right);
+    int top = Math.max(0, (int) box.top);
+    int bottom = Math.min(height - 1, (int) box.bottom);
+
+    PurpleCheckResult result = new PurpleCheckResult();
+
+    if (right <= left || bottom <= top) {
+      result.hasPurple = false;
+      return result;
+    }
+
+    float[] hsv = new float[3];
+
+    int totalSamples = 0;
+    int purpleSamples = 0;
+
+    for (int y = top; y <= bottom; y += PURPLE_SAMPLE_STEP) {
+      for (int x = left; x <= right; x += PURPLE_SAMPLE_STEP) {
+        int pixel = bitmap.getPixel(x, y);
+        Color.colorToHSV(pixel, hsv);
+
+        totalSamples++;
+
+        if (isSelectedMarkerColor(hsv[0], hsv[1], hsv[2])) {
+          purpleSamples++;
+        }
+      }
+    }
+
+    result.totalSamples = totalSamples;
+    result.purpleSamples = purpleSamples;
+
+    if (totalSamples > 0) {
+      result.purpleRatio = (float) purpleSamples / (float) totalSamples;
+    } else {
+      result.purpleRatio = 0;
+    }
+
+    result.hasPurple =
+            purpleSamples >= MIN_PURPLE_SAMPLES_IN_PERSON
+                    && result.purpleRatio >= MIN_PURPLE_RATIO_IN_PERSON;
+
+    return result;
+  }
+
+  private boolean isSelectedMarkerColor(float h, float s, float v) {
+    switch (selectedMarkerColor) {
+      case PURPLE:
+        return h >= PURPLE_H_MIN
+                && h <= PURPLE_H_MAX
+                && s >= PURPLE_S_MIN
+                && v >= PURPLE_V_MIN;
+
+      case BLUE:
+        return h >= BLUE_H_MIN
+                && h <= BLUE_H_MAX
+                && s >= BLUE_S_MIN
+                && v >= BLUE_V_MIN;
+
+      default:
+        return false;
+    }
+  }
+
+  private static class PurpleCheckResult {
+    boolean hasPurple = false;
+    int totalSamples = 0;
+    int purpleSamples = 0;
+    float purpleRatio = 0;
+  }
+
+  private static class TargetCandidate {
+    float x = 0;
+    float size = 0;
+    float confidence = 0;
+    float purpleRatio = 0;
+    int purpleSamples = 0;
+    float score = 0;
+  }
+  private void updateFpsUi(double processingTimeMs) {
+    requireActivity()
+        .runOnUiThread(
+            () ->
+                binding.inferenceInfo.setText(
+                    String.format(Locale.US, "%.1f fps", 1000.f / processingTimeMs)));
+  }
+
+  private void resetFpsUi() {
+    processedFrames = 0;
+    movingAvgProcessingTimeMs = new MovingAverage(movingAvgSize);
+    requireActivity().runOnUiThread(() -> binding.inferenceInfo.setText(R.string.time_fps));
+  }
+
+  protected void handleDriveCommand(Control control) {
+    vehicle.setControl(control);
+    float left = vehicle.getLeftSpeed();
+    float right = vehicle.getRightSpeed();
+    requireActivity()
+        .runOnUiThread(
+            () ->
+                binding.controllerContainer.controlInfo.setText(
+                    String.format(Locale.US, "%.0f,%.0f", left, right)));
+  }
+
+  protected Model getModel() {
+    return model;
+  }
+
+  @Override
+  protected void setModel(Model model) {
+    if (this.model != model) {
+      Timber.d("Updating  model: %s", model);
+      this.model = model;
+      preferencesManager.setObjectNavModel(model.name);
+      onInferenceConfigurationChanged();
+    }
+  }
+
+  protected Network.Device getDevice() {
+    return device;
+  }
+
+  private void setDevice(Network.Device device) {
+    if (this.device != device) {
+      Timber.d("Updating  device: %s", device);
+      this.device = device;
+      final boolean threadsEnabled = device == Network.Device.CPU;
+      binding.plus.setEnabled(threadsEnabled);
+      binding.minus.setEnabled(threadsEnabled);
+      binding.threads.setText(threadsEnabled ? String.valueOf(numThreads) : "N/A");
+      if (threadsEnabled) binding.threads.setTextColor(Color.BLACK);
+      else binding.threads.setTextColor(Color.GRAY);
+      preferencesManager.setDevice(device.ordinal());
+      onInferenceConfigurationChanged();
+    }
+  }
+
+  protected int getNumThreads() {
+    return numThreads;
+  }
+
+  private void setNumThreads(int numThreads) {
+    if (this.numThreads != numThreads) {
+      Timber.d("Updating  numThreads: %s", numThreads);
+      this.numThreads = numThreads;
+      preferencesManager.setNumThreads(numThreads);
+      onInferenceConfigurationChanged();
+    }
+  }
+
+  private String[] getModelFiles() {
+    return requireActivity().getFilesDir().list((dir1, name) -> name.endsWith(".tflite"));
+  }
+
+  private void setSpeedMode(Enums.SpeedMode speedMode) {
+    if (speedMode != null) {
+      switch (speedMode) {
+        case SLOW:
+          binding.controllerContainer.speedMode.setImageResource(R.drawable.ic_speed_low);
+          break;
+        case NORMAL:
+          binding.controllerContainer.speedMode.setImageResource(R.drawable.ic_speed_medium);
+          break;
+        case FAST:
+          binding.controllerContainer.speedMode.setImageResource(R.drawable.ic_speed_high);
+          break;
+      }
+
+      Timber.d("Updating  controlSpeed: %s", speedMode);
+      preferencesManager.setSpeedMode(speedMode.getValue());
+      vehicle.setSpeedMultiplier(speedMode.getValue());
+    }
+  }
+
+  private void setControlMode(Enums.ControlMode controlMode) {
+    if (controlMode != null) {
+      switch (controlMode) {
+        case GAMEPAD:
+          binding.controllerContainer.controlMode.setImageResource(R.drawable.ic_controller);
+          disconnectPhoneController();
+          break;
+        case PHONE:
+          binding.controllerContainer.controlMode.setImageResource(R.drawable.ic_phone);
+          if (!PermissionUtils.hasControllerPermissions(requireActivity()))
+            requestPermissionLauncher.launch(Constants.PERMISSIONS_CONTROLLER);
+          else connectPhoneController();
+          break;
+        case WEBSERVER:
+          binding.controllerContainer.controlMode.setImageResource(R.drawable.ic_server);
+          if (!PermissionUtils.hasControllerPermissions(requireActivity()))
+            requestPermissionLauncher.launch(Constants.PERMISSIONS_CONTROLLER);
+          else connectWebController();
+          break;
+      }
+      Timber.d("Updating  controlMode: %s", controlMode);
+      preferencesManager.setControlMode(controlMode.getValue());
+    }
+  }
+
+  protected void setDriveMode(Enums.DriveMode driveMode) {
+    if (driveMode != null) {
+      switch (driveMode) {
+        case DUAL:
+          binding.controllerContainer.driveMode.setImageResource(R.drawable.ic_dual);
+          break;
+        case GAME:
+          binding.controllerContainer.driveMode.setImageResource(R.drawable.ic_game);
+          break;
+        case JOYSTICK:
+          binding.controllerContainer.driveMode.setImageResource(R.drawable.ic_joystick);
+          break;
+      }
+
+      Timber.d("Updating  driveMode: %s", driveMode);
+      vehicle.setDriveMode(driveMode);
+      preferencesManager.setDriveMode(driveMode.getValue());
+    }
+  }
+
+  private void connectPhoneController() {
+    phoneController.connect(requireContext());
+    Enums.DriveMode oldDriveMode = currentDriveMode;
+    // Currently only dual drive mode supported
+    setDriveMode(Enums.DriveMode.DUAL);
+    binding.controllerContainer.driveMode.setAlpha(0.5f);
+    binding.controllerContainer.driveMode.setEnabled(false);
+    preferencesManager.setDriveMode(oldDriveMode.getValue());
+  }
+
+  private void connectWebController() {
+    phoneController.connectWebServer();
+    Enums.DriveMode oldDriveMode = currentDriveMode;
+    // Currently only dual drive mode supported
+    setDriveMode(Enums.DriveMode.GAME);
+    binding.controllerContainer.driveMode.setAlpha(0.5f);
+    binding.controllerContainer.driveMode.setEnabled(false);
+    preferencesManager.setDriveMode(oldDriveMode.getValue());
+  }
+
+  private void disconnectPhoneController() {
+    phoneController.disconnect();
+    setDriveMode(Enums.DriveMode.getByID(preferencesManager.getDriveMode()));
+    binding.controllerContainer.driveMode.setEnabled(true);
+    binding.controllerContainer.driveMode.setAlpha(1.0f);
+  }
+}
