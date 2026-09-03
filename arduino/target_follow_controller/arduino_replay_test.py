@@ -118,7 +118,7 @@ def build_tests() -> tuple[TestStep, ...]:
         TestStep(
             name="T03 近距离立即停车",
             packets=("TARGET,104,1,0.000,1.050,0.818",),
-            expected=("target distance reached", "L=0", "R=0"),
+            expected=("target centered in safe distance", "L=0", "R=0"),
         ),
         TestStep(
             name="T04 重复序号不得重复累计",
@@ -169,18 +169,90 @@ def build_tests() -> tuple[TestStep, ...]:
         ),
         TestStep(
             name="T10 运行中进入滞回区仍继续运行",
-            packets=("TARGET,114,1,0.000,1.150,0.818",),
+            packets=("TARGET,114,1,0.300,1.150,0.818",),
             expected=("reason=auto follow",),
         ),
         TestStep(
             name="T11 到达停止阈值立即停车",
             packets=("TARGET,115,1,0.000,1.100,0.818",),
-            expected=("target distance reached", "L=0", "R=0"),
+            expected=("target centered in safe distance", "L=0", "R=0"),
         ),
         TestStep(
             name="T12 MANUAL 退出自动模式",
             packets=("CMD,116,MANUAL",),
             expected=("action=MANUAL", "remote stop"),
+        ),
+
+        TestStep(
+            name="T13 重新进入AUTO并启动直行",
+            packets=(
+                "CMD,200,AUTO",
+                "TARGET,201,1,0.000,1.500,0.900",
+                "TARGET,202,1,0.000,1.500,0.900",
+            ),
+            expected=(
+                "action=AUTO",
+                "Far target confirmation: 1/2",
+                "Far target confirmation: 2/2",
+                "targetL=80, targetR=80",
+            ),
+            wait_after_each=0.10,
+        ),
+
+        TestStep(
+            name="T14 偏差低于启动阈值不得转向",
+            packets=("TARGET,203,1,0.110,1.500,0.900",),
+            expected=(
+                "TARGET: seq=203",
+            ),
+        ),
+
+        TestStep(
+            name="T15 大偏差启动非线性转向",
+            packets=("TARGET,204,1,0.300,1.500,0.900",),
+            expected=(
+                "targetL=72, targetR=80",
+            ),
+        ),
+
+        TestStep(
+            name="T16 回到滞回区仍保持转向",
+            packets=("TARGET,205,1,0.110,1.500,0.900",),
+            expected=(
+                "targetL=79, targetR=80",
+            ),
+        ),
+
+        TestStep(
+            name="T17 进入停止阈值后停止转向",
+            packets=("TARGET,206,1,0.050,1.500,0.900",),
+            expected=(
+                "targetL=80, targetR=80",
+            ),
+        ),
+
+        TestStep(
+            name="T18 反向偏差低于启动阈值不得反转",
+            packets=("TARGET,207,1,-0.110,1.500,0.900",),
+            expected=(
+                "TARGET: seq=207",
+            ),
+        ),
+
+        TestStep(
+            name="T19 反向大偏差启动反向转向",
+            packets=("TARGET,208,1,-0.300,1.500,0.900",),
+            expected=(
+                "targetL=80, targetR=72",
+            ),
+        ),
+
+        TestStep(
+            name="T20 返回中心后停止反向转向",
+            packets=("TARGET,209,1,-0.050,1.500,0.900",),
+            expected=(
+                "targetL=80, targetR=80",
+            ),
         ),
     )
 

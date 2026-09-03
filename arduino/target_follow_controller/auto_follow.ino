@@ -2,6 +2,10 @@
 
 namespace {
 
+// 普通行进差速转向状态：
+// 1 向右，-1 向左，0 当前不转向
+int8_t activeFollowTurnDirection = 0;
+
 uint8_t farTargetFrameCount = 0;
 
 // 记录上一条参与确认的TARGET序号，避免同一帧重复计数
@@ -20,43 +24,80 @@ int8_t pendingAlignDirection = 0;
 unsigned long lastCountedAlignSequence = 0;
 bool hasCountedAlignSequence = false;
 
-// 根据目标水平偏差计算转向速度
+// 根据目标水平偏差计算非线性 P 转向速度
 int computeTurnSpeed(float xError) {
   xError = constrain(xError, -1.0f, 1.0f);
 
   const float absoluteError = fabs(xError);
 
+  const int8_t currentDirection =
+      (xError > 0.0f) ? 1 :
+      (xError < 0.0f) ? -1 : 0;
+
   /*
-   * 目标处于画面中央死区内时，不进行转向，
-   * 避免关键点轻微抖动导致左右履带频繁调整。
+   * 尚未转向：
+   * 只有偏差达到启动阈值，才进入转向状态。
    */
-  if (absoluteError <= TARGET_CENTER_X_THRESHOLD) {
-    return 0;
+  if (activeFollowTurnDirection == 0) {
+    if (absoluteError < TURN_START_X_THRESHOLD) {
+      return 0;
+    }
+
+    activeFollowTurnDirection = currentDirection;
   }
 
   /*
-   * 去掉死区后重新映射到 0～1。
-   *
-   * 这样刚超过死区时，转向速度会从0平滑增加，
-   * 不会在0.10附近突然产生较大的转向量。
+   * 已经转向：
+   * 偏差降到停止阈值后才退出，形成滞回。
+   */
+  else {
+    if (absoluteError <= TURN_STOP_X_THRESHOLD) {
+      activeFollowTurnDirection = 0;
+      return 0;
+    }
+
+    /*
+     * 如果目标越过中心并改变方向，
+     * 必须重新达到启动阈值，避免中心附近直接反向抖动。
+     */
+    if (currentDirection != activeFollowTurnDirection) {
+      activeFollowTurnDirection = 0;
+
+      if (absoluteError < TURN_START_X_THRESHOLD) {
+        return 0;
+      }
+
+      activeFollowTurnDirection = currentDirection;
+    }
+  }
+
+  /*
+   * 去除停止阈值后归一化到 0～1。
    */
   const float normalizedError =
-      (absoluteError - TARGET_CENTER_X_THRESHOLD)
-      /
-      (1.0f - TARGET_CENTER_X_THRESHOLD);
+      constrain(
+          (absoluteError - TURN_STOP_X_THRESHOLD)
+          /
+          (1.0f - TURN_STOP_X_THRESHOLD),
+          0.0f,
+          1.0f);
 
-  const float signedError =
-      (xError > 0.0f)
-          ? normalizedError
-          : -normalizedError;
+  /*
+   * 非线性 P 控制：
+   *
+   * exponent > 1：
+   * 小偏差转向柔和，大偏差转向迅速增强。
+   */
+  const float nonlinearError =
+      pow(normalizedError, TURN_NONLINEAR_EXPONENT); //利用指数计算非线性偏差，指数大于1
 
-  const int turnSpeed =
-      (int)(
-          K_TURN
-          * signedError
-          * TURN_SIGN);
+  const int turnMagnitude =
+      (int)(K_TURN * nonlinearError + 0.5f); //转换成PWM，0.5f用于四舍五入
 
-  return turnSpeed;
+  return
+      turnMagnitude
+      * activeFollowTurnDirection //目标偏向哪一侧
+      * TURN_SIGN; //实际方向修正
 }
 
 
@@ -107,6 +148,10 @@ int computeForwardSpeedByRelativeDistance(
       MAX_SPEED);
 }
 
+void resetFollowTurnState() {
+  activeFollowTurnDirection = 0;
+}
+
 void resetFarTargetConfirmationState() {
   farTargetFrameCount = 0;
   lastCountedTargetSequence = 0;
@@ -129,6 +174,7 @@ void resetAlignmentState() {
 }  // namespace
 
 void resetAutoFollowConfirmation() {
+  resetFollowTurnState();
   resetFarTargetConfirmationState();
   resetAlignmentState();
 }

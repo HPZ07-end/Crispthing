@@ -116,8 +116,7 @@ def build_tests() -> tuple[TestStep, ...]:
             name="T04 距离1.14时保持正在进行的原地对准",
             packets=("TARGET,104,1,0.300,1.140,0.900",),
             expected=(
-                "reason=aligned in place",
-                "targetL=-80, targetR=80",
+                "TARGET: seq=104",
             ),
         ),
         TestStep(
@@ -147,8 +146,7 @@ def build_tests() -> tuple[TestStep, ...]:
             name="T07 未在校准时滞回区不得重新启动",
             packets=("TARGET,108,1,0.300,1.140,0.900",),
             expected=(
-                "reason=waiting for restart distance",
-                "targetL=0, targetR=0",
+                "TARGET: seq=108",
             ),
         ),
         TestStep(

@@ -11,7 +11,7 @@
 // ============================================================
 // 下地低速联调：允许电机运行。
 // 上传前必须确认车头传感器、停车阈值和物理断电手段均可用。
-#define MOTOR_ENABLED 1
+#define MOTOR_ENABLED 0
 
 // 总传感器开关
 #define SENSOR_ENABLED 1
@@ -182,8 +182,23 @@ const int MAX_SPEED = 80;
 // 电机最终输出的安全上限，与普通跟随最高速度分开
 const int MOTOR_PWM_LIMIT = 90;
 
+// 非线性 P 转向的最大修正量
 const float K_TURN = 70.0f;
-const float TARGET_CENTER_X_THRESHOLD = 0.10f;
+
+// 非线性指数：
+// > 1 时，小偏差修正柔和，大偏差修正迅速增强
+const float TURN_NONLINEAR_EXPONENT = 1.6f;
+
+/*
+ * 普通跟随转向滞回：
+ * 尚未转向时，偏差达到 0.12 才启动转向；
+ * 已经转向后，偏差降到 0.06 才停止转向。
+ *
+ * 0.06～0.12 内保持之前的转向状态，
+ * 避免人体关键点在中心附近抖动时频繁左右切换。
+ */
+const float TURN_START_X_THRESHOLD = 0.12f;
+const float TURN_STOP_X_THRESHOLD  = 0.06f;
 
 // ============================================================
 // 近距离原地对准参数
