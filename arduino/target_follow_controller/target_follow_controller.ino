@@ -43,6 +43,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
 
+  setupBatteryMonitor();
   setupRemoteControl();
   setupObstacleSensors();
   setupAutoFollow();
@@ -94,6 +95,8 @@ void loop() {
     return;
   }
   lastControlTime = now;
+
+  updateBatteryMonitor(now);
 
   latestDistance = readDistanceSensors();
 

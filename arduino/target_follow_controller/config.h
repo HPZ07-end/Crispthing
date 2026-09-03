@@ -27,6 +27,8 @@
 // 串口调试输出
 #define DEBUG_PRINT 1
 
+// 电池电压监测：总开关到货并完成接线后再改为 1
+#define BATTERY_MONITOR_ENABLED 0
 
 // ============================================================
 // 2. 电机与履带参数
@@ -110,6 +112,18 @@ const int ULTRA_REAR_ECHO  = A2;
 //
 const int EMERGENCY_STOP_PIN = A3;
 
+// 电压检测模块 OUT 接 A0
+const int BATTERY_VOLTAGE_PIN = A0;
+
+// 模块将输入电压缩小为 1/5
+const float BATTERY_DIVIDER_RATIO = 5.0f;
+
+// 万用表校准前保持 1.0
+const float BATTERY_CALIBRATION = 1.0f;
+
+// 每 200 ms 采样一次
+const unsigned long BATTERY_SAMPLE_INTERVAL_MS = 200;
+
 // ============================================================
 // 6. 自主跟随参数
 // ============================================================
@@ -151,8 +165,11 @@ const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
 // 当前仍处于架空调试阶段，最高速度先限制为 90。
 // 后续稳定后可逐步提高，但不要直接恢复到很高速度。
 //
-const int MIN_SPEED = 70;
-const int MAX_SPEED = 70;
+const int MIN_SPEED = 80;
+const int MAX_SPEED = 80;
+
+// 电机最终输出的安全上限，与普通跟随最高速度分开
+const int MOTOR_PWM_LIMIT = 90;
 
 const float K_TURN = 70.0f;
 const float TARGET_CENTER_X_THRESHOLD = 0.10f;
@@ -172,8 +189,8 @@ const float ALIGN_STOP_X_THRESHOLD  = 0.08f;
 const uint8_t ALIGN_CONFIRM_FRAMES = 2;
 
 // 原地对准时的最小、最大转向
-const int MIN_ALIGN_TURN_SPEED = 50;
-const int MAX_ALIGN_TURN_SPEED = 70;
+const int MIN_ALIGN_TURN_SPEED = 80;
+const int MAX_ALIGN_TURN_SPEED = 80;
 
 // ============================================================
 // 电机输出平滑

@@ -218,16 +218,16 @@ void applySafeMotionCommand(
     const MotionCommand& cmd) {
 
   const int targetLeft =
-      constrain(
-          cmd.leftSpeed,
-          -MAX_SPEED,
-          MAX_SPEED);
+    constrain(
+        cmd.leftSpeed,
+        -MOTOR_PWM_LIMIT,
+        MOTOR_PWM_LIMIT);
 
   const int targetRight =
       constrain(
           cmd.rightSpeed,
-          -MAX_SPEED,
-          MAX_SPEED);
+          -MOTOR_PWM_LIMIT,
+          MOTOR_PWM_LIMIT);
 
 
   /*
@@ -251,17 +251,44 @@ void applySafeMotionCommand(
   else {
 
 #if MOTOR_RAMP_ENABLED
-    appliedLeftSpeed =
-        approachSpeed(
-            appliedLeftSpeed,
-            targetLeft,
-            MOTOR_RAMP_STEP);
 
-    appliedRightSpeed =
-        approachSpeed(
-            appliedRightSpeed,
-            targetRight,
-            MOTOR_RAMP_STEP);
+    /*
+     * 如果任意一侧履带准备反向：
+     *
+     * 不让 appliedSpeed 通过斜坡慢慢跨过零点，
+     * 而是先让左右履带同时立即停车。
+     *
+     * 下一控制周期如果反向命令仍然存在，
+     * 再从 0 开始向新的方向逐步加速。
+     */
+    const bool leftDirectionReversing =
+        (appliedLeftSpeed > 0 && targetLeft < 0) ||
+        (appliedLeftSpeed < 0 && targetLeft > 0);
+
+    const bool rightDirectionReversing =
+        (appliedRightSpeed > 0 && targetRight < 0) ||
+        (appliedRightSpeed < 0 && targetRight > 0);
+
+    if (leftDirectionReversing ||
+        rightDirectionReversing) {
+
+      appliedLeftSpeed = 0;
+      appliedRightSpeed = 0;
+    }
+    else {
+      appliedLeftSpeed =
+          approachSpeed(
+              appliedLeftSpeed,
+              targetLeft,
+              MOTOR_RAMP_STEP);
+
+      appliedRightSpeed =
+          approachSpeed(
+              appliedRightSpeed,
+              targetRight,
+              MOTOR_RAMP_STEP);
+    }
+
 #else
     appliedLeftSpeed = targetLeft;
     appliedRightSpeed = targetRight;
