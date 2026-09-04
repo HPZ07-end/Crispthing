@@ -548,36 +548,36 @@ MotionCommand computeAutoFollowCommand(
         absoluteXError *
         activeAlignDirection;
 
-    int turnSpeed =
-        computeTurnSpeed(confirmedXError);
-
     /*
-     * computeTurnSpeed 使用 0.10 的普通转弯死区。
-     * 原地对准停止阈值是 0.08，因此在 0.08～0.10 内，
-     * 如果仍处于对准状态，就按最小 PWM 继续转动。
-     */
-    if (turnSpeed == 0) {
+    * 近距离原地对准采用独立的非线性速度曲线：
+    * 接近停止阈值时使用较低速度，偏差较大时逐步提高速度。
+    */
+    const float alignNormalizedError =
+        constrain(
+            (absoluteXError - ALIGN_STOP_X_THRESHOLD)
+            /
+            (ALIGN_FULL_SPEED_X_THRESHOLD
+            - ALIGN_STOP_X_THRESHOLD),
+            0.0f,
+            1.0f);
 
-        turnSpeed =
-          (activeAlignDirection > 0)
-              ? MIN_ALIGN_TURN_SPEED
-              : -MIN_ALIGN_TURN_SPEED;
+    const float alignNonlinearError =
+        pow(
+            alignNormalizedError,
+            ALIGN_TURN_NONLINEAR_EXPONENT);
 
-        turnSpeed *= TURN_SIGN;
-    }
+    const int alignTurnMagnitude =
+        MIN_ALIGN_TURN_SPEED
+        +
+        (int)(
+            (MAX_ALIGN_TURN_SPEED - MIN_ALIGN_TURN_SPEED)
+            * alignNonlinearError
+            + 0.5f);
 
-    if (turnSpeed > 0) {
-      turnSpeed = constrain(
-        turnSpeed,
-        MIN_ALIGN_TURN_SPEED,
-        MAX_ALIGN_TURN_SPEED);
-    }
-    else {
-      turnSpeed = constrain(
-        turnSpeed,
-        -MAX_ALIGN_TURN_SPEED,
-        -MIN_ALIGN_TURN_SPEED);
-    }
+    const int turnSpeed =
+        alignTurnMagnitude
+        * activeAlignDirection
+        * TURN_SIGN;
 
     // 左侧有障碍，不允许向左原地转动
     if (activeAlignDirection < 0 &&
@@ -689,15 +689,23 @@ MotionCommand computeAutoFollowCommand(
 
   MotionCommand cmd;
 
+  /*
+  * 普通跟随差速：
+  * MAX_SPEED 控制直行速度；
+  * MOTOR_PWM_LIMIT 控制转弯时单侧履带的最终安全上限。
+  *
+  * 这样外侧履带可以适当加速，内侧履带同时减速，
+  * 提高跟随过程中的转向响应。
+  */
   cmd.leftSpeed = constrain(
       forwardSpeed + turnSpeed,
-      -MAX_SPEED,
-      MAX_SPEED);
+      -MOTOR_PWM_LIMIT,
+      MOTOR_PWM_LIMIT);
 
   cmd.rightSpeed = constrain(
       forwardSpeed - turnSpeed,
-      -MAX_SPEED,
-      MAX_SPEED);
+      -MOTOR_PWM_LIMIT,
+      MOTOR_PWM_LIMIT);
 
   cmd.reason = "auto follow";
 

@@ -165,7 +165,7 @@ const float FOLLOW_STOP_RELATIVE_DISTANCE = 1.12f;
  * 2 条确认帧。1.12～1.16 是滞回区间，用于避免距离估计在
  * 停止阈值附近抖动时反复启停。
  */
-const float FOLLOW_RESTART_RELATIVE_DISTANCE = 1.16f;
+const float FOLLOW_RESTART_RELATIVE_DISTANCE = 1.22f;
 
 // 相对距离达到 1.80 后，允许使用最大跟随速度
 const float FOLLOW_FULL_SPEED_RELATIVE_DISTANCE = 1.80f;
@@ -184,7 +184,7 @@ const int MAX_SPEED = 80;
 const int MOTOR_PWM_LIMIT = 90;
 
 // 非线性 P 转向的最大修正量
-const float K_TURN = 70.0f;
+const float K_TURN = 85.0f;
 
 // 非线性指数：
 // > 1 时，小偏差修正柔和，大偏差修正迅速增强
@@ -214,9 +214,16 @@ const float ALIGN_STOP_X_THRESHOLD = 0.08f;
 // 必须连续收到两条序号不同、且偏转方向一致的 TARGET 才启动。
 const uint8_t ALIGN_CONFIRM_FRAMES = 2;
 
-// 原地对准时的最小、最大转向
-const int MIN_ALIGN_TURN_SPEED = 80;
-const int MAX_ALIGN_TURN_SPEED = 80;
+// 原地对准的最低、最高 PWM
+const int MIN_ALIGN_TURN_SPEED = 60;
+const int MAX_ALIGN_TURN_SPEED = 70;
+
+// 水平偏差达到 0.30 时使用最高原地转向速度
+const float ALIGN_FULL_SPEED_X_THRESHOLD = 0.30f;
+
+// 原地对准减速曲线指数。
+// > 1 时，接近中心后的降速更加明显。
+const float ALIGN_TURN_NONLINEAR_EXPONENT = 1.5f;
 
 // ============================================================
 // 电机输出平滑
