@@ -137,12 +137,87 @@ MotionCommand chooseSafeCommand(unsigned long now) {
   return computeAutoFollowCommand(latestTarget, latestDistance);
 }
 
-void applySafeMotionCommand(const MotionCommand& cmd) {
-  const int safeLeft =
-      constrain(cmd.leftSpeed, -MAX_SPEED, MAX_SPEED);
+void applySafeMotionCommand(
+    const MotionCommand& cmd) {
 
-  const int safeRight =
-      constrain(cmd.rightSpeed, -MAX_SPEED, MAX_SPEED);
+  const int targetLeft =
+    constrain(
+        cmd.leftSpeed,
+        -MOTOR_PWM_LIMIT,
+        MOTOR_PWM_LIMIT);
+
+  const int targetRight =
+      constrain(
+          cmd.rightSpeed,
+          -MOTOR_PWM_LIMIT,
+          MOTOR_PWM_LIMIT);
+
+
+  /*
+   * 只要控制命令要求左右履带都停车，
+   * 就立即归零，不使用减速斜坡。
+   *
+   * 因此以下情况都能立即停车：
+   * - 目标丢失
+   * - 距离数据无效
+   * - 到达跟随距离
+   * - TARGET 超时
+   * - MANUAL / STOP / ESTOP
+   * - 硬件急停
+   */
+  if (targetLeft == 0 &&
+      targetRight == 0) {
+
+    appliedLeftSpeed = 0;
+    appliedRightSpeed = 0;
+  }
+  else {
+
+#if MOTOR_RAMP_ENABLED
+
+    /*
+     * 如果任意一侧履带准备反向：
+     *
+     * 不让 appliedSpeed 通过斜坡慢慢跨过零点，
+     * 而是先让左右履带同时立即停车。
+     *
+     * 下一控制周期如果反向命令仍然存在，
+     * 再从 0 开始向新的方向逐步加速。
+     */
+    const bool leftDirectionReversing =
+        (appliedLeftSpeed > 0 && targetLeft < 0) ||
+        (appliedLeftSpeed < 0 && targetLeft > 0);
+
+    const bool rightDirectionReversing =
+        (appliedRightSpeed > 0 && targetRight < 0) ||
+        (appliedRightSpeed < 0 && targetRight > 0);
+
+    if (leftDirectionReversing ||
+        rightDirectionReversing) {
+
+      appliedLeftSpeed = 0;
+      appliedRightSpeed = 0;
+    }
+    else {
+      appliedLeftSpeed =
+          approachSpeed(
+              appliedLeftSpeed,
+              targetLeft,
+              MOTOR_RAMP_STEP);
+
+      appliedRightSpeed =
+          approachSpeed(
+              appliedRightSpeed,
+              targetRight,
+              MOTOR_RAMP_STEP);
+    }
+
+#else
+    appliedLeftSpeed = targetLeft;
+    appliedRightSpeed = targetRight;
+#endif
+  }
+
 
 #if DEBUG_PRINT
   // 只在状态或速度变化时打印，避免串口输出阻塞控制循环。
