@@ -1,6 +1,29 @@
 #include "config.h"
 
 namespace {
+
+// 当前实际施加到左右履带的速度。
+int appliedLeftSpeed = 0;
+int appliedRightSpeed = 0;
+
+// 让 current 每个控制周期最多向 target 靠近 step。
+int approachSpeed(int current, int target, int step) {
+  if (current < target) {
+    current += step;
+    if (current > target) {
+      current = target;
+    }
+  }
+  else if (current > target) {
+    current -= step;
+    if (current < target) {
+      current = target;
+    }
+  }
+
+  return current;
+}
+
 bool isEmergencyStopActive() {
 #if EMERGENCY_STOP_ENABLED
   return digitalRead(EMERGENCY_STOP_PIN) == HIGH;
@@ -225,8 +248,8 @@ void applySafeMotionCommand(
   static int lastPrintedRight = 32767;
   static int lastPrintedState = -1;
 
-  if (safeLeft != lastPrintedLeft ||
-      safeRight != lastPrintedRight ||
+  if (appliedLeftSpeed != lastPrintedLeft ||
+      appliedRightSpeed != lastPrintedRight ||
       (int)currentState != lastPrintedState) {
 
     Serial.print(F("State="));
@@ -234,19 +257,21 @@ void applySafeMotionCommand(
     Serial.print(F(", reason="));
     Serial.print(cmd.reason);
     Serial.print(F(", L="));
-    Serial.print(safeLeft);
+    Serial.print(appliedLeftSpeed);
     Serial.print(F(", R="));
-    Serial.println(safeRight);
+    Serial.println(appliedRightSpeed);
 
-    lastPrintedLeft = safeLeft;
-    lastPrintedRight = safeRight;
+    lastPrintedLeft = appliedLeftSpeed;
+    lastPrintedRight = appliedRightSpeed;
     lastPrintedState = (int)currentState;
   }
 #endif
 
-  setMotorSpeed(safeLeft, safeRight);
+  setMotorSpeed(appliedLeftSpeed, appliedRightSpeed);
 }
 
 void stopCar() {
+  appliedLeftSpeed = 0;
+  appliedRightSpeed = 0;
   setMotorSpeed(0, 0);
 }

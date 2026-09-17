@@ -111,19 +111,20 @@ int computeForwardSpeedByRelativeDistance(
   }
 
   // 已经达到跟随停止距离
-  if (distanceCm <= FOLLOW_STOP_DISTANCE_CM) {
+  if (relativeDistance <= FOLLOW_STOP_RELATIVE_DISTANCE) {
     return 0;
   }
 
   // 目标较远，使用最大速度
-  if (distanceCm >= FOLLOW_FULL_SPEED_DISTANCE_CM) {
+  if (relativeDistance >= FOLLOW_FULL_SPEED_RELATIVE_DISTANCE) {
     return MAX_SPEED;
   }
 
   // 在停止距离和全速距离之间线性调速
   const float ratio =
-      (distanceCm - FOLLOW_STOP_DISTANCE_CM) /
-      (FOLLOW_FULL_SPEED_DISTANCE_CM - FOLLOW_STOP_DISTANCE_CM);
+      (relativeDistance - FOLLOW_STOP_RELATIVE_DISTANCE) /
+      (FOLLOW_FULL_SPEED_RELATIVE_DISTANCE
+       - FOLLOW_STOP_RELATIVE_DISTANCE);
 
   const int speed =
       MIN_SPEED + (int)(ratio * (MAX_SPEED - MIN_SPEED));
@@ -169,8 +170,8 @@ void setupAutoFollow() {
   // 当前自主跟随模块不需要额外硬件初始化
 }
 
-// 解析新协议：
-// TARGET,序号,目标有效,x偏差,距离,相似度
+// 解析协议：
+// TARGET,序号,目标有效,x偏差,相对距离比例,相似度
 bool parseTargetMessage(char* line, TargetData& target) {
   char* token = strtok(line, ",");
 
@@ -207,12 +208,12 @@ bool parseTargetMessage(char* line, TargetData& target) {
   }
   target.xError = atof(token);
 
-  // 4. 目标距离，单位 cm
+  // 4. 相对距离比例：注册尺度 / 当前尺度
   token = strtok(NULL, ",");
   if (token == NULL) {
     return false;
   }
-  target.distanceCm = atof(token);
+  target.relativeDistance = atof(token);
 
   // 5. 相似度
   token = strtok(NULL, ",");
@@ -236,8 +237,8 @@ bool parseTargetMessage(char* line, TargetData& target) {
   }
 
   // 允许 -1 表示距离无效，不允许其他负数
-  if (target.distanceCm < 0.0f &&
-      target.distanceCm != -1.0f) {
+  if (target.relativeDistance < 0.0f &&
+      target.relativeDistance != -1.0f) {
     return false;
   }
 
@@ -253,8 +254,8 @@ bool parseTargetMessage(char* line, TargetData& target) {
   Serial.print(", xError=");
   Serial.print(target.xError);
 
-  Serial.print(", distanceCm=");
-  Serial.print(target.distanceCm);
+  Serial.print(", relativeDistance=");
+  Serial.print(target.relativeDistance);
 
   Serial.print(", similarity=");
   Serial.println(target.similarity);
@@ -278,8 +279,9 @@ MotionCommand computeAutoFollowCommand(
   }
 
   // 距离无效
-  if (target.distanceCm <= 0.0f) {
-    return makeStopCommand("invalid target distance");
+  if (target.relativeDistance <= 0.0f) {
+    resetAutoFollowConfirmation();
+    return makeStopCommand("invalid relative distance");
   }
 
 
@@ -462,10 +464,6 @@ MotionCommand computeAutoFollowCommand(
     * absoluteXError 仍然决定转向强度，
     * activeAlignDirection 决定转向方向。
     */
-    const float confirmedXError =
-        absoluteXError *
-        activeAlignDirection;
-
     /*
     * 近距离原地对准采用独立的非线性速度曲线：
     * 接近停止阈值时使用较低速度，偏差较大时逐步提高速度。
@@ -582,7 +580,8 @@ MotionCommand computeAutoFollowCommand(
 
   // 根据距离计算前进速度
   const int forwardSpeed =
-      computeForwardSpeedByDistance(target.distanceCm);
+      computeForwardSpeedByRelativeDistance(
+          target.relativeDistance);
 
   // 根据水平偏差计算转向速度
   int turnSpeed = computeTurnSpeed(target.xError);
